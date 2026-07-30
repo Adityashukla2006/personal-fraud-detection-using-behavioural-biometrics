@@ -53,7 +53,3 @@ toward their own behaviour. Over enough sessions the adversary becomes the enrol
 system has been taught to accept them. The literature presents adaptivity as a pure improvement over
 static profiles; this project argues it is a tradeoff and measures both sides of it. This blind spot
 becomes gap RG3, the primary research gap, in [research-gap.md](research-gap.md).
-
-> The full narrative synthesis text as written for the report (phase P3 of the work plan) is not
-> reproduced in the source document. Cluster prose above is derived from the survey table.
-> TODO: replace with the report text once available.

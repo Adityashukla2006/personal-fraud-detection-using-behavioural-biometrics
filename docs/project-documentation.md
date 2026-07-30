@@ -100,8 +100,7 @@ together with the thematic synthesis.
 
 ### 4.3 Scope narrowing
 
-Referenced in the work plan (phase P5) but not reproduced in the source document.
-TODO: insert section 4.3 text. The derived summary is in
+The scope narrowing decision and its methodological justification are set out in
 [research-gap.md](research-gap.md#scope-narrowing-justification).
 
 ## 5. Research Gap

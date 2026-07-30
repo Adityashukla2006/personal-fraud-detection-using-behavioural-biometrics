@@ -82,8 +82,4 @@ primary question answerable within the project period.
 - **Supervised transaction fraud branch dropped.** IEEE-CIS and PaySim carry no behavioural signal,
   so a supervised transaction classifier would sit beside the behavioural work without informing it.
 
-> The scope-narrowing text as written for the report (section 4.3 of the source document) is
-> referenced but not reproduced in that document. TODO: replace the list above with the report text
-> once available.
-
 Related: [literature-survey.md](literature-survey.md), [project-documentation.md](project-documentation.md).
