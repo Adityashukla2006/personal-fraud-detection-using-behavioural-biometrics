@@ -1,0 +1,18 @@
+# Offline track (Track 1) dependencies.
+#
+# Python 3.12 to match the Lambda runtime in the deployed track, so that code shared through
+# backend/shared/ cannot pass locally and fail on AWS.
+#
+# Setup, from the repository root:
+#     python3.12 -m venv .venv
+#     ./.venv/bin/python -m pip install -r ai-models/requirements.txt
+#     ./.venv/bin/python ai-models/download_dataset.py
+#     ./.venv/bin/python -m pytest ai-models/tests/
+
+numpy>=2.0
+pandas>=2.2
+scipy>=1.13
+scikit-learn>=1.5
+matplotlib>=3.9
+jupyterlab>=4.2
+pytest>=8.0
