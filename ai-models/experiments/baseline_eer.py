@@ -24,6 +24,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import features  # noqa: E402
 from dataset import load_benchmark, make_split, subjects, timing_columns  # noqa: E402
 from metrics import BenchmarkResult, equal_error_rate, error_curve  # noqa: E402
 from scoring import ReferenceProfile, Scaling  # noqa: E402
@@ -84,16 +85,21 @@ def operating_points(frame: pd.DataFrame, columns: list[str], scaling: Scaling) 
 
 
 def main() -> int:
-    frame = load_benchmark()
-    columns = timing_columns(frame)
+    raw = load_benchmark()
+    set_a = timing_columns(raw)
+
+    # Set B needs the aggregate columns appended before the same split protocol can select them.
+    frame = features.with_features(raw)
+    set_b = features.FEATURE_NAMES
 
     print(f"Benchmark: {len(frame):,} rows, {len(subjects(frame))} subjects")
-    print(f"Feature set A: {len(columns)} raw timing features\n")
+    print(f"Set A: {len(set_a)} raw timing features (published-baseline comparison)")
+    print(f"Set B: {len(set_b)} aggregate features (deployable representation)\n")
 
     results: dict[Scaling, BenchmarkResult] = {}
     for scaling in ("mad", "std"):
-        results[scaling] = evaluate(frame, columns, scaling)
-        print(f"--- dispersion = {scaling} ---")
+        results[scaling] = evaluate(frame, set_a, scaling)
+        print(f"--- Set A, dispersion = {scaling} ---")
         print(results[scaling].summary())
         print()
 
@@ -105,17 +111,29 @@ def main() -> int:
     print(f"                     {std_eer:.4f}  (std)   delta {std_eer - PUBLISHED_BASELINE_EER:+.4f}")
     print()
     better = "MAD" if mad_eer < std_eer else "standard deviation"
-    print(f"Lower error with {better}, by {abs(mad_eer - std_eer):.4f} EER.")
+    print(f"Lower error with {better}, by {abs(mad_eer - std_eer):.4f} EER.\n")
 
-    print("\nMean FAR at fixed FRR targets (MAD):")
-    print(operating_points(frame, columns, "mad").to_string(index=False))
+    set_b_result = evaluate(frame, set_b, "mad")
+    print("--- Set B, dispersion = mad ---")
+    print(set_b_result.summary())
+    penalty = set_b_result.mean_eer - mad_eer
+    print(
+        f"\nCost of the deployable representation: {penalty:+.4f} EER "
+        f"({mad_eer:.4f} -> {set_b_result.mean_eer:.4f})"
+    )
+
+    print("\nMean FAR at fixed FRR targets (Set A, MAD):")
+    print(operating_points(frame, set_a, "mad").to_string(index=False))
+    print("\nMean FAR at fixed FRR targets (Set B, MAD):")
+    print(operating_points(frame, set_b, "mad").to_string(index=False))
 
     TABLES.mkdir(parents=True, exist_ok=True)
     table = pd.DataFrame(
         {
             "subject": list(results["mad"].per_subject),
-            "eer_mad": list(results["mad"].per_subject.values()),
-            "eer_std": list(results["std"].per_subject.values()),
+            "eer_set_a_mad": list(results["mad"].per_subject.values()),
+            "eer_set_a_std": list(results["std"].per_subject.values()),
+            "eer_set_b_mad": [set_b_result.per_subject[s] for s in results["mad"].per_subject],
         }
     )
     destination = TABLES / "baseline_eer.csv"

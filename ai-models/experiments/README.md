@@ -45,6 +45,36 @@ rejecting one genuine user in a hundred while admitting 37% of impostors, or hol
 6.5% while rejecting one genuine user in five. Neither is deployable, which is what the four graded
 response tiers in O4 exist to avoid.
 
+## Cost of the deployable representation
+
+Set A is the 31 raw timing columns, one hold time per key and two latencies per transition. It is
+what the published baseline is measured over, and it is unusable in deployment: every feature is
+defined by one specific 11-character password, so changing the credential changes what each feature
+means.
+
+Set B is the nine aggregate features that survive that problem, described in `../features.py`.
+Scored through the identical protocol:
+
+| Representation | Features | Mean EER |
+| --- | --- | --- |
+| Set A, raw per-key | 31 | 0.0962 |
+| Set B, deployable aggregate | 9 | **0.2043** |
+
+**Aggregation costs +0.1081 EER, slightly more than doubling the error rate.** Mean FAR at fixed FRR
+targets degrades correspondingly: 0.429 / 0.314 / 0.271 / 0.225 at FRR targets of 1 / 5 / 10 / 20%.
+
+This is a genuine result and not a defect to hide. The raw representation knows *which particular
+key* was slow; the aggregate only knows that some key was. That detail is most of the discriminative
+signal, and giving it up is the price of a representation that works on any input field. No paper in
+the survey reports this cost, because none of them deploys.
+
+It does carry a design consequence worth stating plainly in the report: at 0.204 EER the deployed
+scorer is a weak standalone authenticator, and is defensible only as one signal feeding the graded
+tiers alongside the credential check, not as a replacement for it.
+
+Three of the twelve features in the architecture diagram, backspace rate, error correction rate and
+paste count, are absent from Set B because the benchmark cannot express them. See issue #1.
+
 Per-subject values: [`results/tables/baseline_eer.csv`](../../results/tables/baseline_eer.csv).
 
 Remaining numeric results: TODO, pending the poisoning, guarded update and drift experiments.
