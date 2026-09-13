@@ -122,7 +122,7 @@ The project is built as two deliverables that do not depend on each other.
 ### 6.2 Deployed architecture
 
 The diagram and the component-by-component description are in
-[architecture-diagram.md](architecture-diagram.md).
+[architecture.md](architecture.md).
 
 ## 7. Datasets and Evaluation
 

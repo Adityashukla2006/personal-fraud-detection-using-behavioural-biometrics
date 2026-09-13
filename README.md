@@ -74,7 +74,7 @@ flowchart TD
 
 **C3 Scoring.** The score Lambda extracts the 12 timing features, reads the caller's reference profile, standardises the feature vector against it, computes a scaled Manhattan distance, and maps that distance to a risk value from 0 to 100 with a response tier and the three highest deviating features.
 
-**C4 Data.** A single DynamoDB table holds three item types: `PROFILE#<user>` for reference statistics, `SESSION#<id>` for raw submitted feature vectors under a TTL, and `DECISION#<id>` for the scored outcome and its explanation. See [database/schema.md](database/schema.md).
+**C4 Data.** A single DynamoDB table holds three item types: `PROFILE#<user>` for reference statistics, `SESSION#<id>` for raw submitted feature vectors under a TTL, and `DECISION#<id>` for the scored outcome and its explanation. See the data model in [docs/architecture.md](docs/architecture.md).
 
 **C5 Response.** The tier drives one of four graded, reversible responses: silent monitoring, step up re-authentication, transaction hold, and block with alert. A block publishes an SNS email alert.
 
@@ -82,7 +82,7 @@ flowchart TD
 
 **Attack simulator.** A local Python simulator exercises the deployed endpoint with bot typing, replayed sessions and impostor sessions drawn from other benchmark subjects.
 
-Full component-by-component description: [docs/architecture-diagram.md](docs/architecture-diagram.md).
+Full component-by-component description: [docs/architecture.md](docs/architecture.md).
 
 ## 6. Technology Stack
 
@@ -96,6 +96,7 @@ Full component-by-component description: [docs/architecture-diagram.md](docs/arc
 | Scheduling | Amazon EventBridge Scheduler |
 | Alerting | Amazon SNS |
 | Observability | Amazon CloudWatch |
+| Infrastructure | Terraform, S3 remote state with native locking |
 | Offline analysis | Python 3, numpy, pandas, scikit-learn, matplotlib, Jupyter |
 
 ## 7. Dataset Details
@@ -129,34 +130,33 @@ Full component-by-component description: [docs/architecture-diagram.md](docs/arc
 ```
 .
 ├── README.md                          This file
-├── .gitignore
-├── frontend/                          Static simulated banking client
-│   └── src/                           Capture JavaScript and page markup
-├── backend/                           Serverless application code
-│   ├── lambdas/
-│   │   ├── score/                     Per session scoring Lambda
-│   │   └── updater/                   Scheduled guarded profile updater
-│   └── shared/                        Feature and scoring module shared by Lambda and offline analysis
-├── ai-models/                         Offline behavioural modelling track
-│   ├── feature-extraction/            The 12 keystroke timing features
-│   ├── profiling/                     Per user reference profile statistics
-│   └── experiments/                   Evaluation, poisoning and guarded update experiments
-├── database/                          DynamoDB single-table design
-│   └── schema.md                      Item types, key schema and access patterns
-├── data/                              Dataset workspace, contents not committed
-│   ├── raw/                           CMU benchmark as downloaded
-│   └── processed/                     Derived feature matrices and profiles
-├── docs/                              Project documentation
+├── Makefile                           Every routine task: test, lint, dataset, baseline
+├── pyproject.toml                     pytest and ruff configuration
+├── requirements-research.txt          Offline track only: numpy, pandas, scikit-learn
+├── requirements-dev.txt               pytest and ruff
+├── docs/
+│   ├── architecture.md                The design of record
 │   ├── project-documentation.md       Full source document
 │   ├── literature-survey.md           15 paper survey and thematic synthesis
 │   ├── research-gap.md                RG1 to RG5 and the consolidated gap statement
-│   ├── work-distribution.md           Responsibilities and per folder ownership
-│   └── architecture-diagram.md        Architecture diagram and component descriptions
-├── results/                           Experimental output
-│   ├── figures/                       Plots, including the headline tradeoff curve
-│   └── tables/                        Numeric result tables
-└── presentation/                      Review slides and demonstration recording
+│   └── work-distribution.md           Responsibilities and per folder ownership
+├── src/
+│   ├── fraudcore/                     All decision logic, pure Python, no dependencies
+│   └── lambdas/                       Thin handlers that parse an event and call fraudcore
+├── client/                            Static simulated banking client and capture script
+├── research/                          Offline track, the only place numpy is permitted
+│   ├── data/                          Dataset workspace, contents not committed
+│   └── results/                       Figures and numeric result tables
+├── simulator/                         Attack simulator, run locally against the endpoint
+├── infra/                             Terraform, structure defined in docs/architecture.md
+└── tests/
+    ├── unit/                          No AWS, no network, fast
+    └── integration/                   Runs against the deployed dev stack
 ```
+
+The structural rule that matters: all decision logic lives in `src/fraudcore/` and is imported by
+both the Lambda handlers and the research track, so the offline and deployed scorers can never
+diverge. A handler that contains scoring arithmetic is a refactor, not a feature.
 
 ## 9. Work Distribution
 

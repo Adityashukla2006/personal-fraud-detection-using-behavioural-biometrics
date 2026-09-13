@@ -2,6 +2,8 @@
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
 .venv/
 
 # Node
@@ -18,10 +20,22 @@ node_modules/
 .vscode/
 .idea/
 
-# Dataset, not committed (READMEs stay tracked)
-data/raw/*
-data/processed/*
-!**/README.md
+# Dataset, not committed
+research/data/raw/*
+research/data/processed/*
+!**/.gitkeep
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+.terraform.lock.hcl
+
+# Build output
+dist/
+build/
+*.zip
 
 # Local project instructions
 CLAUDE.md

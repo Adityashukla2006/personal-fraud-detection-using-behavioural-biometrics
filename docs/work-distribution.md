@@ -11,7 +11,7 @@
 
 Three items are shared and are not owned by either member alone.
 
-**The shared feature and scoring module (`backend/shared/`).** The 12 feature definitions, the
+**The shared decision logic (`src/fraudcore/`).** The 12 feature definitions, the
 standardisation step and the scaled Manhattan distance live in one module imported by both the
 offline analysis and the score Lambda. It is jointly owned because it is the single point where the
 two tracks meet: a unilateral change to a feature definition would silently break the claim that the
@@ -32,20 +32,19 @@ Unambiguous, so it is clear who commits where.
 
 | Folder | Owner | Notes |
 | --- | --- | --- |
-| `frontend/`, `frontend/src/` | Aditya | Client and capture layer |
-| `backend/lambdas/score/` | Aditya | Scoring Lambda |
-| `backend/lambdas/updater/` | Aditya | Guarded updater Lambda, guard policy specified jointly |
-| `backend/shared/` | Shared | Both members agree changes before commit |
-| `ai-models/feature-extraction/` | Arushi | Applies the shared module to the benchmark |
-| `ai-models/profiling/` | Arushi | Reference profiles and calibration |
-| `ai-models/experiments/` | Arushi | Evaluation, poisoning, guarded update, drift |
-| `database/` | Aditya | Single-table design and schema |
-| `data/raw/`, `data/processed/` | Arushi | Dataset workspace, contents not committed |
+| `client/` | Aditya | Client and capture layer |
+| `src/lambdas/` | Aditya | Handlers: scoring, adaptation, aggregator, ledger |
+| `src/fraudcore/` | Shared | All decision logic; both members agree changes before commit |
+| `infra/` | Aditya | Terraform, one environment |
+| `simulator/` | Aditya | Attack simulator and measurement |
+| `research/` | Arushi | Dataset, profiles, evaluation, poisoning, drift |
+| `research/data/` | Arushi | Dataset workspace, contents not committed |
+| `research/results/` | Arushi | Detection and poisoning output; latency and cost committed by Aditya |
+| `tests/unit/` | Shared | Written with the code they cover, in the same commit |
+| `tests/integration/` | Aditya | One per phase, against the deployed dev stack |
 | `docs/literature-survey.md` | Arushi | Survey and thematic synthesis |
 | `docs/research-gap.md` | Aditya | Gap analysis and scope-narrowing justification |
-| `docs/architecture-diagram.md` | Aditya | Architecture and component descriptions |
+| `docs/architecture.md` | Aditya | The design of record |
 | `docs/project-documentation.md` | Shared | Reproduction of the source document |
 | `docs/work-distribution.md` | Shared | This file |
-| `results/figures/`, `results/tables/` | Arushi | Detection and poisoning output; latency and cost output committed by Aditya |
-| `presentation/` | Shared | Review slides and demonstration recording |
 | `README.md`, `.gitignore` | Shared | Repository root |

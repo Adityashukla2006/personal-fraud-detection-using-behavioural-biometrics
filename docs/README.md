@@ -9,10 +9,10 @@ sections that are referenced individually.
   scope-narrowing justification.
 - [work-distribution.md](work-distribution.md), responsibilities, shared work and the per folder
   ownership map.
-- [architecture-diagram.md](architecture-diagram.md), the architecture diagram and the
-  component-by-component description.
+- [architecture.md](architecture.md), the design of record: components, flows, data model, the
+  adaptation policy, the AWS service mapping and the Terraform structure.
 
 Where the split documents and the full source document disagree, the source document is
-authoritative.
+authoritative on scope and objectives. On system design, `architecture.md` is authoritative.
 
 Jointly owned by Aditya Shukla (23BIT0250) and Arushi Tiwari (23BIT0181).
