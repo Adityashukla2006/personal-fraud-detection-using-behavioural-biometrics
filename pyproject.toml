@@ -1,0 +1,21 @@
+# Tooling configuration only. This project is not packaged or published, so there is no
+# [project] table and nothing here is installed with pip.
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests/unit"]
+# "." makes the research package importable and "src" makes fraudcore importable, without either
+# being installed. Integration tests are excluded from the default run because they need a
+# deployed stack; reach them with 'make test-integration'.
+pythonpath = [".", "src"]
+addopts = "-q --strict-markers"
+markers = [
+    "integration: requires the deployed dev stack, not run by 'make test'",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

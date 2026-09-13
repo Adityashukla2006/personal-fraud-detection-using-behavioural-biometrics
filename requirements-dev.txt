@@ -1,0 +1,4 @@
+# Test and lint tooling, needed by every track.
+
+pytest>=8.0
+ruff>=0.6

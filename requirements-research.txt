@@ -1,0 +1,14 @@
+# Offline research track only. Nothing under src/ may import any of these: the Lambda runtime is
+# pure Python plus boto3 by hard constraint, and tests/unit/test_runtime_purity.py enforces it.
+#
+# Setup, from the repository root:
+#     python -m venv .venv
+#     .venv/Scripts/python -m pip install -r requirements-research.txt   # Windows
+#     ./.venv/bin/python  -m pip install -r requirements-research.txt    # macOS and Linux
+
+numpy>=2.0
+pandas>=2.2
+scipy>=1.13
+scikit-learn>=1.5
+matplotlib>=3.9
+jupyterlab>=4.2
