@@ -3,6 +3,11 @@
 
 PYTHON ?= python
 
+# fraudcore lives under src/ and the project is deliberately not packaged, so src/ goes on the
+# import path here rather than through an editable install. pyproject.toml sets the same path for
+# pytest, so the two entry points agree.
+export PYTHONPATH := src
+
 .PHONY: help install dataset test test-integration lint format baseline clean
 
 help:

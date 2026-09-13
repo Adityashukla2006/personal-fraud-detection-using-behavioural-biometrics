@@ -21,9 +21,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from fraudcore.scoring import ReferenceProfile, Scaling
 from research.dataset import load_benchmark, make_split, subjects, timing_columns
 from research.metrics import BenchmarkResult, equal_error_rate, error_curve
-from research.scoring_reference import ReferenceProfile, Scaling
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TABLES = REPO_ROOT / "research" / "results" / "tables"
@@ -35,6 +35,16 @@ PUBLISHED_BASELINE_EER = 0.0962
 PUBLISHED_BASELINE_LABEL = "Killourhy & Maxion (2009), Manhattan (scaled)"
 
 
+def score_all(profile: ReferenceProfile, sessions: np.ndarray) -> np.ndarray:
+    """Score every row of a session matrix with the pure-Python detector.
+
+    ``fraudcore`` scores one session at a time, because that is all the Lambda ever needs and
+    adding a batch path would be a second code path to keep correct. The experiment loops here
+    instead, which keeps the deployed and measured detector byte-for-byte the same function.
+    """
+    return np.array([profile.score(row.tolist()) for row in sessions], dtype=float)
+
+
 def evaluate(frame: pd.DataFrame, columns: list[str], scaling: Scaling) -> BenchmarkResult:
     """Run the full 51-subject protocol and return the per-subject EERs."""
     per_subject: dict[str, float] = {}
@@ -43,8 +53,8 @@ def evaluate(frame: pd.DataFrame, columns: list[str], scaling: Scaling) -> Bench
         split = make_split(frame, subject, columns=columns)
         profile = ReferenceProfile.fit(split.enrolment, split.feature_names, scaling=scaling)
 
-        genuine = profile.score(split.genuine_test)
-        impostor = profile.score(split.impostor_test)
+        genuine = score_all(profile, split.genuine_test)
+        impostor = score_all(profile, split.impostor_test)
 
         per_subject[subject] = equal_error_rate(genuine, impostor)
 
@@ -65,7 +75,7 @@ def operating_points(frame: pd.DataFrame, columns: list[str], scaling: Scaling) 
         split = make_split(frame, subject, columns=columns)
         profile = ReferenceProfile.fit(split.enrolment, split.feature_names, scaling=scaling)
         curve = error_curve(
-            profile.score(split.genuine_test), profile.score(split.impostor_test)
+            score_all(profile, split.genuine_test), score_all(profile, split.impostor_test)
         )
 
         row: dict[str, float] = {}
