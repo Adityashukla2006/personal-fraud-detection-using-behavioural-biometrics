@@ -26,6 +26,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from fraudcore.features import BENCHMARK_FEATURE_NAMES, KeystrokeTiming, extract, vector
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PATH = REPO_ROOT / "research" / "data" / "raw" / "DSL-StrongPasswordData.csv"
 
@@ -62,6 +64,31 @@ def load_benchmark(path: Path | None = None) -> pd.DataFrame:
     frame = pd.read_csv(source)
     frame = frame.sort_values(["subject", "sessionIndex", "rep"], kind="stable")
     return frame.reset_index(drop=True)
+
+
+def with_aggregate_features(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return the benchmark with the nine benchmark-computable aggregate features appended.
+
+    Every row goes through ``fraudcore.features.extract``, the function the scoring Lambda calls,
+    so the Set B figure describes the deployed feature code rather than a vectorised re-derivation.
+    """
+    holds = frame[[c for c in frame.columns if c.startswith("H.")]]
+    down_downs = frame[[c for c in frame.columns if c.startswith("DD.")]]
+    up_downs = frame[[c for c in frame.columns if c.startswith("UD.")]]
+    if holds.empty or down_downs.empty or up_downs.empty:
+        raise ValueError("frame does not contain H.*, DD.* and UD.* timing columns")
+
+    rows = [
+        vector(extract(KeystrokeTiming(hold, down_down, up_down)), BENCHMARK_FEATURE_NAMES)
+        for hold, down_down, up_down in zip(
+            holds.itertuples(index=False),
+            down_downs.itertuples(index=False),
+            up_downs.itertuples(index=False),
+            strict=True,
+        )
+    ]
+    aggregates = pd.DataFrame(rows, columns=list(BENCHMARK_FEATURE_NAMES), index=frame.index)
+    return pd.concat([frame, aggregates], axis=1)
 
 
 def subjects(frame: pd.DataFrame) -> list[str]:

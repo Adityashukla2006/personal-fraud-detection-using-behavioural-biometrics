@@ -5,9 +5,16 @@ floating. For each subject in turn: build a reference profile from their first 2
 score their remaining 200 as genuine and 250 impostor vectors drawn from the other 50 subjects,
 take the EER of those two distributions, then average across all subjects.
 
-Both dispersion measures are evaluated. Mean absolute deviation is what the published detector uses
-and is the project's default; standard deviation is included so the choice rests on a measured
-difference rather than on assertion, which is the open question in issue #1.
+Two representations go through that identical protocol:
+
+    Set A  the 31 raw per-key timing columns, the published comparison
+    Set B  the 9 benchmark-computable aggregates from ``fraudcore.features``, what is deployed
+
+The gap between them is the accuracy cost of a representation that works on any input field.
+
+Per-device-class profiles cannot be evaluated here: every CMU repetition was typed on one keyboard,
+so the benchmark has exactly one device class. That mechanism is covered by unit tests, not by a
+benchmark number.
 
 Usage, from the repository root::
 
@@ -18,21 +25,42 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
+import matplotlib
 
-from fraudcore.scoring import ReferenceProfile, Scaling
-from research.dataset import load_benchmark, make_split, subjects, timing_columns
-from research.metrics import BenchmarkResult, equal_error_rate, error_curve
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+
+from fraudcore.features import BENCHMARK_FEATURE_NAMES  # noqa: E402
+from fraudcore.scoring import ReferenceProfile, Scaling  # noqa: E402
+from research.dataset import (  # noqa: E402
+    load_benchmark,
+    make_split,
+    subjects,
+    timing_columns,
+    with_aggregate_features,
+)
+from research.metrics import BenchmarkResult, equal_error_rate, error_curve  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TABLES = REPO_ROOT / "research" / "results" / "tables"
+FIGURES = REPO_ROOT / "research" / "results" / "figures"
 
 # Killourhy and Maxion (2009) report the scaled Manhattan detector as the best performer on this
 # benchmark. VERIFY against the source PDF before this figure goes anywhere near the report -- it is
 # quoted here from secondary knowledge and the project doc requires it be taken from the paper.
 PUBLISHED_BASELINE_EER = 0.0962
 PUBLISHED_BASELINE_LABEL = "Killourhy & Maxion (2009), Manhattan (scaled)"
+
+# Reference palette, light surface: categorical slots 1 and 2, ink and chrome.
+SET_A_COLOUR = "#2a78d6"
+SET_B_COLOUR = "#eb6834"
+SURFACE = "#fcfcfb"
+INK_SECONDARY = "#52514e"
+INK_MUTED = "#898781"
+GRIDLINE = "#e1e0d9"
 
 
 def score_all(profile: ReferenceProfile, sessions: np.ndarray) -> np.ndarray:
@@ -90,17 +118,68 @@ def operating_points(frame: pd.DataFrame, columns: list[str], scaling: Scaling) 
     return pd.DataFrame(rows).mean().to_frame(name="mean").T
 
 
+def plot_per_subject(set_a: BenchmarkResult, set_b: BenchmarkResult, destination: Path) -> None:
+    """Per-subject EER for both representations, subjects ordered by their Set A error."""
+    order = sorted(set_a.per_subject, key=set_a.per_subject.__getitem__)
+    rank = np.arange(1, len(order) + 1)
+    a = np.array([set_a.per_subject[s] for s in order])
+    b = np.array([set_b.per_subject[s] for s in order])
+
+    fig, ax = plt.subplots(figsize=(9, 4.8), dpi=150)
+    fig.patch.set_facecolor(SURFACE)
+    ax.set_facecolor(SURFACE)
+
+    ax.vlines(rank, a, b, color=GRIDLINE, linewidth=1, zorder=1)
+    for values, colour, label in (
+        (a, SET_A_COLOUR, f"Set A, 31 raw per-key features (mean {set_a.mean_eer:.4f})"),
+        (b, SET_B_COLOUR, f"Set B, 9 deployable aggregates (mean {set_b.mean_eer:.4f})"),
+    ):
+        ax.scatter(
+            rank, values, s=28, color=colour, edgecolors=SURFACE, linewidths=1.5,
+            label=label, zorder=3,
+        )
+
+    ax.axhline(PUBLISHED_BASELINE_EER, color=INK_MUTED, linewidth=1, linestyle="--", zorder=2)
+    ax.annotate(
+        f"published baseline {PUBLISHED_BASELINE_EER:.4f}",
+        xy=(1, PUBLISHED_BASELINE_EER), xytext=(0, 4), textcoords="offset points",
+        color=INK_SECONDARY, fontsize=8,
+    )
+
+    ax.set_xlabel("Subject, ordered by Set A EER", color=INK_SECONDARY)
+    ax.set_ylabel("Equal Error Rate", color=INK_SECONDARY)
+    ax.set_title(
+        "Per-subject EER on the CMU benchmark, scaled Manhattan detector",
+        loc="left", color="#0b0b0b", fontsize=11,
+    )
+    ax.set_xlim(0, len(order) + 1)
+    ax.set_ylim(bottom=0)
+    ax.grid(axis="y", color=GRIDLINE, linewidth=0.6)
+    ax.set_axisbelow(True)
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set_color("#c3c2b7")
+    ax.tick_params(colors=INK_MUTED, labelsize=8, length=0)
+    ax.legend(loc="upper left", frameon=False, fontsize=8, labelcolor=INK_SECONDARY)
+
+    fig.tight_layout()
+    fig.savefig(destination, facecolor=SURFACE)
+    plt.close(fig)
+
+
 def main() -> int:
-    frame = load_benchmark()
-    columns = timing_columns(frame)
+    frame = with_aggregate_features(load_benchmark())
+    set_a_columns = timing_columns(frame)
+    set_b_columns = list(BENCHMARK_FEATURE_NAMES)
 
     print(f"Benchmark: {len(frame):,} rows, {len(subjects(frame))} subjects")
-    print(f"Feature set A: {len(columns)} raw timing features\n")
+    print(f"Set A: {len(set_a_columns)} raw timing features (published-baseline comparison)")
+    print(f"Set B: {len(set_b_columns)} aggregate features (deployable representation)\n")
 
     results: dict[Scaling, BenchmarkResult] = {}
     for scaling in ("mad", "std"):
-        results[scaling] = evaluate(frame, columns, scaling)
-        print(f"--- dispersion = {scaling} ---")
+        results[scaling] = evaluate(frame, set_a_columns, scaling)
+        print(f"--- Set A, dispersion = {scaling} ---")
         print(results[scaling].summary())
         print()
 
@@ -112,24 +191,39 @@ def main() -> int:
     std_delta = std_eer - PUBLISHED_BASELINE_EER
     print(f"This implementation: {mad_eer:.4f}  (MAD)   delta {mad_delta:+.4f}")
     print(f"                     {std_eer:.4f}  (std)   delta {std_delta:+.4f}")
-    print()
     better = "MAD" if mad_eer < std_eer else "standard deviation"
-    print(f"Lower error with {better}, by {abs(mad_eer - std_eer):.4f} EER.")
+    print(f"Lower error with {better}, by {abs(mad_eer - std_eer):.4f} EER.\n")
 
-    print("\nMean FAR at fixed FRR targets (MAD):")
-    print(operating_points(frame, columns, "mad").to_string(index=False))
+    set_b = evaluate(frame, set_b_columns, "mad")
+    print("--- Set B, dispersion = mad ---")
+    print(set_b.summary())
+    print(
+        f"\nCost of the deployable representation: {set_b.mean_eer - mad_eer:+.4f} EER "
+        f"({mad_eer:.4f} -> {set_b.mean_eer:.4f})"
+    )
+
+    print("\nMean FAR at fixed FRR targets (Set A, MAD):")
+    print(operating_points(frame, set_a_columns, "mad").to_string(index=False))
+    print("\nMean FAR at fixed FRR targets (Set B, MAD):")
+    print(operating_points(frame, set_b_columns, "mad").to_string(index=False))
 
     TABLES.mkdir(parents=True, exist_ok=True)
     table = pd.DataFrame(
         {
             "subject": list(results["mad"].per_subject),
-            "eer_mad": list(results["mad"].per_subject.values()),
-            "eer_std": list(results["std"].per_subject.values()),
+            "eer_set_a_mad": list(results["mad"].per_subject.values()),
+            "eer_set_a_std": list(results["std"].per_subject.values()),
+            "eer_set_b_mad": [set_b.per_subject[s] for s in results["mad"].per_subject],
         }
     )
-    destination = TABLES / "baseline_eer.csv"
-    table.to_csv(destination, index=False)
-    print(f"\nPer-subject results written to {destination.relative_to(REPO_ROOT)}")
+    table_path = TABLES / "baseline_eer.csv"
+    table.to_csv(table_path, index=False)
+    print(f"\nPer-subject results written to {table_path.relative_to(REPO_ROOT)}")
+
+    FIGURES.mkdir(parents=True, exist_ok=True)
+    figure_path = FIGURES / "baseline_eer.png"
+    plot_per_subject(results["mad"], set_b, figure_path)
+    print(f"Figure written to {figure_path.relative_to(REPO_ROOT)}")
 
     return 0
 
