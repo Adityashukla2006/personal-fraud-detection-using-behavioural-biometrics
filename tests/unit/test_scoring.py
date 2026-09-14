@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from fraudcore.scoring import DISPERSION_FLOOR, ReferenceProfile
+from fraudcore.scoring import DISPERSION_FLOOR, DeviceProfiles, ReferenceProfile
 
 # Chosen so that every statistic is exact in decimal and can be verified by hand.
 #
@@ -104,3 +104,43 @@ class TestExplanation:
         self, profile: ReferenceProfile
     ) -> None:
         assert len(profile.top_deviations([6.0, 10.0005], count=99)) == 2
+
+
+class TestDeviceProfiles:
+    def test_a_session_is_scored_against_its_own_device_class(
+        self, profile: ReferenceProfile
+    ) -> None:
+        # A mobile profile centred far away proves the desktop score did not come from it.
+        mobile = ReferenceProfile.fit([[100.0, 0.0], [102.0, 1.0]], NAMES)
+        profiles = DeviceProfiles({"desktop": profile, "mobile": mobile})
+        assert profiles.score("desktop", [6.0, 10.0005]) == pytest.approx(7.25)
+
+    def test_a_class_without_a_profile_has_no_score_and_no_fallback(
+        self, profile: ReferenceProfile
+    ) -> None:
+        profiles = DeviceProfiles({"desktop": profile})
+        assert profiles.profile_for("tablet") is None
+        assert profiles.score("tablet", [6.0, 10.0005]) is None
+
+    def test_an_unknown_device_class_is_rejected(self, profile: ReferenceProfile) -> None:
+        with pytest.raises(ValueError, match="unknown device classes"):
+            DeviceProfiles({"smartwatch": profile})  # type: ignore[dict-item]
+        with pytest.raises(ValueError, match="unknown device class"):
+            DeviceProfiles({"desktop": profile}).score("watch", [1.0, 2.0])  # type: ignore[arg-type]
+
+    def test_profiles_with_different_feature_sets_are_rejected(
+        self, profile: ReferenceProfile
+    ) -> None:
+        other = ReferenceProfile.fit(ENROLMENT, ["a", "b"])
+        with pytest.raises(ValueError, match="one feature set"):
+            DeviceProfiles({"desktop": profile, "mobile": other})
+
+    def test_the_mapping_cannot_be_mutated_after_construction(
+        self, profile: ReferenceProfile
+    ) -> None:
+        source = {"desktop": profile}
+        profiles = DeviceProfiles(source)
+        source["mobile"] = profile
+        assert profiles.profile_for("mobile") is None
+        with pytest.raises(TypeError):
+            profiles.by_class["mobile"] = profile  # type: ignore[index]
