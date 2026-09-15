@@ -259,6 +259,8 @@ class Store:
             "session_id": request.session_id,
             "checkpoint": request.checkpoint,
             "device_class": request.device.device_class,
+            # A random per-browser id, not a fingerprint; adaptation counts device sessions by it.
+            "device_id": request.device.device_id,
             "action": decision.action,
             "risk": decision.risk,
             "confidence": decision.confidence,

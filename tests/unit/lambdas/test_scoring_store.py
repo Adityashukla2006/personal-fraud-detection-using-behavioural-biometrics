@@ -205,6 +205,7 @@ class TestSave:
         assert item["ttl"] == int(NOW) + DECISION_TTL_SECONDS
         assert item["risk"] is None
         assert item["action"] == "monitor"
+        assert item["device_id"] == "device-0001"
         assert item["scores"]["behaviour"] == {
             "score": Decimal("1.5"),
             "confidence": Decimal("0.25"),
