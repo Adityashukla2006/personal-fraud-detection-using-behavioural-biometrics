@@ -43,3 +43,23 @@ output "function_role_arns" {
 output "log_group_names" {
   value = module.compute.log_group_names
 }
+
+output "scoring_function_name" {
+  value = module.compute.scoring_function_name
+}
+
+output "api_url" {
+  value = module.api.api_url
+}
+
+output "client_url" {
+  value = module.storage.client_url
+}
+
+output "user_pool_id" {
+  value = module.auth.user_pool_id
+}
+
+output "user_pool_client_id" {
+  value = module.auth.client_id
+}

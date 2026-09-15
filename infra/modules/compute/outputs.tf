@@ -5,3 +5,11 @@ output "function_role_arns" {
 output "log_group_names" {
   value = { for name, group in aws_cloudwatch_log_group.function : name => group.name }
 }
+
+output "scoring_function_name" {
+  value = aws_lambda_function.scoring.function_name
+}
+
+output "scoring_invoke_arn" {
+  value = aws_lambda_function.scoring.invoke_arn
+}

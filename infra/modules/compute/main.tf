@@ -1,10 +1,13 @@
-# One IAM role and one log group per Lambda function. The functions themselves arrive from Phase 4
-# onward; their roles exist first so least privilege is designed rather than retrofitted.
+# One IAM role and one log group per Lambda function, and the functions deployed so far. Roles
+# exist before their functions so least privilege is designed rather than retrofitted.
 
 terraform {
   required_providers {
     aws = {
       source = "hashicorp/aws"
+    }
+    archive = {
+      source = "hashicorp/archive"
     }
   }
 }
@@ -34,6 +37,8 @@ locals {
     }
   }
 }
+
+data "aws_region" "current" {}
 
 data "aws_iam_policy_document" "assume_lambda" {
   statement {
@@ -75,6 +80,25 @@ data "aws_iam_policy_document" "function" {
     resources = ["*"]
   }
 
+  # The table is encrypted under a customer-managed key, so every caller needs KMS permissions of its
+  # own; DynamoDB does not use them on the caller's behalf. Scoped to the one key, and only when
+  # DynamoDB is the one asking, so these roles still cannot decrypt anything directly.
+  dynamic "statement" {
+    for_each = length(each.value.read) + length(each.value.write) > 0 ? [1] : []
+
+    content {
+      sid       = "UseTableKeyThroughDynamoDB"
+      actions   = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
+      resources = [var.table_key_arn]
+
+      condition {
+        test     = "StringEquals"
+        variable = "kms:ViaService"
+        values   = ["dynamodb.${data.aws_region.current.region}.amazonaws.com"]
+      }
+    }
+  }
+
   dynamic "statement" {
     for_each = length(each.value.read) > 0 ? [each.value.read] : []
 
@@ -114,4 +138,40 @@ resource "aws_iam_role_policy" "function" {
   name   = "${var.name_prefix}-${each.key}"
   role   = aws_iam_role.function[each.key].id
   policy = data.aws_iam_policy_document.function[each.key].json
+}
+
+# The package is staged by 'make build' and only zipped here, so Terraform never runs a build.
+data "archive_file" "scoring" {
+  type        = "zip"
+  source_dir  = "${var.build_dir}/scoring"
+  output_path = "${var.build_dir}/scoring.zip"
+}
+
+resource "aws_lambda_function" "scoring" {
+  function_name    = "${var.name_prefix}-scoring"
+  role             = aws_iam_role.function["scoring"].arn
+  runtime          = "python3.12"
+  architectures    = ["arm64"]
+  handler          = "scoring.handler.lambda_handler"
+  memory_size      = 512
+  timeout          = 5
+  filename         = data.archive_file.scoring.output_path
+  source_code_hash = data.archive_file.scoring.output_base64sha256
+
+  environment {
+    variables = {
+      TABLE_NAME = var.table_name
+    }
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  logging_config {
+    log_format = "Text"
+    log_group  = aws_cloudwatch_log_group.function["scoring"].name
+  }
+
+  depends_on = [aws_iam_role_policy.function]
 }
