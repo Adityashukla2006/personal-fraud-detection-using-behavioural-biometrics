@@ -15,12 +15,18 @@ variable "jwt_audience" {
   type = list(string)
 }
 
-variable "function_name" {
-  type = string
+variable "functions" {
+  description = "Integrated functions: name, invoke ARN, and the path their invoke permission covers."
+  type = map(object({
+    name       = string
+    invoke_arn = string
+    path       = string
+  }))
 }
 
-variable "function_invoke_arn" {
-  type = string
+variable "routes" {
+  description = "Route key to the functions entry that serves it."
+  type        = map(string)
 }
 
 variable "throttling_burst_limit" {

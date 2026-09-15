@@ -31,11 +31,19 @@ locals {
       read  = []
       write = ["AGG#*", "PAYEE#*"]
     }
+    # The only writer of ledger items, invoked only by the response workflow.
     ledger = {
       read  = ["LEDGER#*"]
       write = ["LEDGER#*"]
     }
+    # Reads a caller's own transfers to report status and find the step-up task token.
+    transfers = {
+      read  = ["LEDGER#*"]
+      write = []
+    }
   }
+
+  packaged = toset(["scoring", "ledger", "transfers"])
 }
 
 data "aws_region" "current" {}
@@ -140,13 +148,50 @@ resource "aws_iam_role_policy" "function" {
   policy = data.aws_iam_policy_document.function[each.key].json
 }
 
-# The package is staged by 'make build' and only zipped here, so Terraform never runs a build.
-data "archive_file" "scoring" {
-  type        = "zip"
-  source_dir  = "${var.build_dir}/scoring"
-  output_path = "${var.build_dir}/scoring.zip"
+# Scoring starts the transfer workflow, and nothing else.
+resource "aws_iam_role_policy" "scoring_workflow" {
+  name = "${var.name_prefix}-scoring-workflow"
+  role = aws_iam_role.function["scoring"].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "StartTransferWorkflow"
+      Effect   = "Allow"
+      Action   = "states:StartExecution"
+      Resource = var.state_machine_arn
+    }]
+  })
 }
 
+# Task-token calls carry no state machine in their request, so they cannot be scoped to one; the
+# token itself is the capability, and only a verified passkey makes this function present it.
+resource "aws_iam_role_policy" "transfers_step_up" {
+  name = "${var.name_prefix}-transfers-step-up"
+  role = aws_iam_role.function["transfers"].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "CompleteVerifiedStepUp"
+      Effect   = "Allow"
+      Action   = "states:SendTaskSuccess"
+      Resource = "*"
+    }]
+  })
+}
+
+# Packages are staged by 'make build' and only zipped here, so Terraform never runs a build.
+data "archive_file" "function" {
+  for_each = local.packaged
+
+  type        = "zip"
+  source_dir  = "${var.build_dir}/${each.key}"
+  output_path = "${var.build_dir}/${each.key}.zip"
+}
+
+# One resource block per function rather than for_each: scoring depends on the workflow, and the
+# workflow depends on the ledger, so a shared block would form a dependency cycle.
 resource "aws_lambda_function" "scoring" {
   function_name    = "${var.name_prefix}-scoring"
   role             = aws_iam_role.function["scoring"].arn
@@ -155,8 +200,40 @@ resource "aws_lambda_function" "scoring" {
   handler          = "scoring.handler.lambda_handler"
   memory_size      = 512
   timeout          = 5
-  filename         = data.archive_file.scoring.output_path
-  source_code_hash = data.archive_file.scoring.output_base64sha256
+  filename         = data.archive_file.function["scoring"].output_path
+  source_code_hash = data.archive_file.function["scoring"].output_base64sha256
+
+  environment {
+    variables = {
+      TABLE_NAME              = var.table_name
+      STATE_MACHINE_ARN       = var.state_machine_arn
+      STEP_UP_TIMEOUT_SECONDS = tostring(var.step_up_timeout_seconds)
+      REVIEW_TIMEOUT_SECONDS  = tostring(var.review_timeout_seconds)
+    }
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  logging_config {
+    log_format = "Text"
+    log_group  = aws_cloudwatch_log_group.function["scoring"].name
+  }
+
+  depends_on = [aws_iam_role_policy.function, aws_iam_role_policy.scoring_workflow]
+}
+
+resource "aws_lambda_function" "ledger" {
+  function_name    = "${var.name_prefix}-ledger"
+  role             = aws_iam_role.function["ledger"].arn
+  runtime          = "python3.12"
+  architectures    = ["arm64"]
+  handler          = "ledger.handler.lambda_handler"
+  memory_size      = 256
+  timeout          = 10
+  filename         = data.archive_file.function["ledger"].output_path
+  source_code_hash = data.archive_file.function["ledger"].output_base64sha256
 
   environment {
     variables = {
@@ -170,8 +247,38 @@ resource "aws_lambda_function" "scoring" {
 
   logging_config {
     log_format = "Text"
-    log_group  = aws_cloudwatch_log_group.function["scoring"].name
+    log_group  = aws_cloudwatch_log_group.function["ledger"].name
   }
 
   depends_on = [aws_iam_role_policy.function]
+}
+
+resource "aws_lambda_function" "transfers" {
+  function_name    = "${var.name_prefix}-transfers"
+  role             = aws_iam_role.function["transfers"].arn
+  runtime          = "python3.12"
+  architectures    = ["arm64"]
+  handler          = "transfers.handler.lambda_handler"
+  memory_size      = 256
+  timeout          = 10
+  filename         = data.archive_file.function["transfers"].output_path
+  source_code_hash = data.archive_file.function["transfers"].output_base64sha256
+
+  environment {
+    variables = {
+      TABLE_NAME        = var.table_name
+      COGNITO_CLIENT_ID = var.cognito_client_id
+    }
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  logging_config {
+    log_format = "Text"
+    log_group  = aws_cloudwatch_log_group.function["transfers"].name
+  }
+
+  depends_on = [aws_iam_role_policy.function, aws_iam_role_policy.transfers_step_up]
 }

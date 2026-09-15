@@ -63,3 +63,11 @@ output "user_pool_id" {
 output "user_pool_client_id" {
   value = module.auth.client_id
 }
+
+output "state_machine_arn" {
+  value = module.workflow.state_machine_arn
+}
+
+output "alerts_topic_arn" {
+  value = module.observability.alerts_topic_arn
+}

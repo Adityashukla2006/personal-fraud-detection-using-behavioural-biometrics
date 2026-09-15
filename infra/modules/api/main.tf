@@ -1,5 +1,5 @@
-# HTTP API in front of the scoring Lambda: JWT validation and throttling at the edge, so scoring
-# never runs for unauthenticated or flooding traffic (architecture section 11.1).
+# HTTP API in front of the Lambda functions: JWT validation and throttling at the edge, so no
+# function runs for unauthenticated or flooding traffic (architecture section 11.1).
 
 terraform {
   required_providers {
@@ -15,7 +15,7 @@ resource "aws_apigatewayv2_api" "http" {
 
   cors_configuration {
     allow_origins = var.allowed_origins
-    allow_methods = ["POST"]
+    allow_methods = ["GET", "POST"]
     allow_headers = ["authorization", "content-type"]
     # Lets the client read the handler's own timing and separate it from network latency.
     expose_headers = ["server-timing"]
@@ -35,18 +35,23 @@ resource "aws_apigatewayv2_authorizer" "jwt" {
   }
 }
 
-resource "aws_apigatewayv2_integration" "scoring" {
+resource "aws_apigatewayv2_integration" "function" {
+  for_each = var.functions
+
   api_id                 = aws_apigatewayv2_api.http.id
   integration_type       = "AWS_PROXY"
-  integration_uri        = var.function_invoke_arn
+  integration_uri        = each.value.invoke_arn
   payload_format_version = "2.0"
   timeout_milliseconds   = 10000
 }
 
-resource "aws_apigatewayv2_route" "score" {
+# Every route requires a valid Cognito token.
+resource "aws_apigatewayv2_route" "route" {
+  for_each = var.routes
+
   api_id             = aws_apigatewayv2_api.http.id
-  route_key          = "POST /score"
-  target             = "integrations/${aws_apigatewayv2_integration.scoring.id}"
+  route_key          = each.key
+  target             = "integrations/${aws_apigatewayv2_integration.function[each.value].id}"
   authorization_type = "JWT"
   authorizer_id      = aws_apigatewayv2_authorizer.jwt.id
 }
@@ -65,11 +70,29 @@ resource "aws_apigatewayv2_stage" "default" {
   }
 }
 
-# The invoke permission belongs to the API because the API is the caller it authorises.
-resource "aws_lambda_permission" "api" {
+# Invoke permissions belong to the API because the API is the caller they authorise. Each is scoped
+# to the function's own path.
+resource "aws_lambda_permission" "function" {
+  for_each = var.functions
+
   statement_id  = "AllowHttpApiInvoke"
   action        = "lambda:InvokeFunction"
-  function_name = var.function_name
+  function_name = each.value.name
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.http.execution_arn}/*/*/score"
+  source_arn    = "${aws_apigatewayv2_api.http.execution_arn}/*/*/${each.value.path}"
+}
+
+moved {
+  from = aws_apigatewayv2_integration.scoring
+  to   = aws_apigatewayv2_integration.function["scoring"]
+}
+
+moved {
+  from = aws_apigatewayv2_route.score
+  to   = aws_apigatewayv2_route.route["POST /score"]
+}
+
+moved {
+  from = aws_lambda_permission.api
+  to   = aws_lambda_permission.function["scoring"]
 }

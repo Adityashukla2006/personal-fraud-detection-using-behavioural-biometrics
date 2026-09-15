@@ -13,3 +13,15 @@ output "scoring_function_name" {
 output "scoring_invoke_arn" {
   value = aws_lambda_function.scoring.invoke_arn
 }
+
+output "ledger_function_arn" {
+  value = aws_lambda_function.ledger.arn
+}
+
+output "transfers_function_name" {
+  value = aws_lambda_function.transfers.function_name
+}
+
+output "transfers_invoke_arn" {
+  value = aws_lambda_function.transfers.invoke_arn
+}
