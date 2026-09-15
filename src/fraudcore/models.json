@@ -48,6 +48,7 @@
     "buffer_capacity": 200,
     "rebuild_every": 20,
     "cold_start_sessions": 5,
-    "reanchor_days": 30.0
+    "reanchor_days": 30.0,
+    "anchor": "projected"
   }
 }

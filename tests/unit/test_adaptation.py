@@ -276,6 +276,71 @@ class TestRebuild:
         assert (result.saturated, result.reanchored) == (True, False)
 
 
+class TestAnchorSource:
+    """Where a re-anchor moves the anchor: the flaw in "projected", and the fix in "verified"."""
+
+    VERIFIED = dataclasses.replace(POLICY, anchor="verified", buffer_capacity=100)
+    PROJECTED = dataclasses.replace(POLICY, anchor="projected", buffer_capacity=100)
+
+    def _poisoned_buffer(self) -> list[BufferedSession]:
+        # Ten verified genuine sessions near 0.1, thirty attacker sessions at 10 admitted at 0.6:
+        # the attacker holds 18 of 28 units of weight, so the all-session median sits on them.
+        return _buffer([0.1] * 10, weight=1.0) + _buffer([10.0] * 30, weight=0.6)
+
+    def test_a_verified_anchor_ignores_sessions_below_full_trust(self) -> None:
+        buffer = self._poisoned_buffer()
+        result = rebuild(_profile(), buffer, tau=1.0, now=1.0, policy=self.VERIFIED)
+        assert result.profile is not None
+        # The profile itself still moves, but only one budget from the old anchor.
+        assert result.profile.centre == pytest.approx((1.0,))
+        # The anchor goes to the verified sessions, not to the attacker-pulled profile.
+        assert result.profile.anchor_centre == pytest.approx((0.1,), abs=1e-4)
+
+    def test_a_projected_anchor_follows_the_attacker_pulled_profile(self) -> None:
+        buffer = self._poisoned_buffer()
+        result = rebuild(_profile(), buffer, tau=1.0, now=1.0, policy=self.PROJECTED)
+        assert result.profile is not None
+        assert result.profile.anchor_centre == pytest.approx((1.0,))
+
+    @pytest.mark.parametrize(
+        ("policy", "bounded_by_budget"), [("verified", True), ("projected", False)]
+    )
+    def test_genuine_step_ups_refresh_the_attackers_budget_only_under_projection(
+        self, policy: str, bounded_by_budget: bool
+    ) -> None:
+        # The scale is frozen so the comparison isolates the anchor: with an adaptable scale the
+        # attacker-dominated median collapses the scale to its floor, which stalls both policies.
+        chosen = dataclasses.replace(
+            self.VERIFIED if policy == "verified" else self.PROJECTED, scale_budget=1e-9
+        )
+        profile = _profile()
+        for _ in range(8):
+            # Every rebuild is triggered by a genuine step-up, so every rebuild re-anchors.
+            result = rebuild(profile, self._poisoned_buffer(), tau=1.0, now=1.0, policy=chosen)
+            assert result.profile is not None
+            profile = result.profile
+        moved = displacement(profile.centre, (0.0,), (1.0,))
+        # With verified anchoring the profile stays one budget from the genuine sessions.
+        assert (moved <= 0.1 + chosen.budget + 1e-6) is bounded_by_budget
+
+    def test_no_verified_sessions_leaves_the_anchor_where_it_was(self) -> None:
+        buffer = _buffer([10.0] * 10, weight=0.6)
+        now = POLICY.reanchor_days * adaptation.SECONDS_PER_DAY
+        quiet = rebuild(_profile(), buffer, tau=0.6, now=now, policy=self.VERIFIED)
+        assert quiet.profile is not None
+        assert quiet.profile.anchor_centre == (0.0,)
+
+    def test_too_few_verified_sessions_keep_the_old_anchor_scale(self) -> None:
+        buffer = _buffer([0.1, 0.3], weight=1.0) + _buffer([10.0] * 5, weight=0.6)
+        result = rebuild(_profile(scale=2.0), buffer, tau=1.0, now=1.0, policy=self.VERIFIED)
+        assert result.profile is not None
+        assert result.profile.anchor_scale == (2.0,)
+
+    def test_an_unknown_anchor_source_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="anchor"):
+            dataclasses.replace(POLICY, anchor="average")
+
+
 class TestPolicy:
     def test_the_shipped_policy_loads(self) -> None:
         policy = AdaptationPolicy.load()
@@ -287,7 +352,7 @@ class TestPolicy:
         "changes",
         [
             {"budget": 0.0},
-            {"scale_budget": 0.0},
+            {"scale_budget": -0.1},
             {"tau_min": 0.0},
             {"cold_start_sessions": 11},
             {"rebuild_every": 0},
@@ -296,3 +361,13 @@ class TestPolicy:
     def test_invalid_policies_are_rejected(self, changes: dict[str, float]) -> None:
         with pytest.raises(ValueError):
             dataclasses.replace(POLICY, **changes)
+
+    def test_a_zero_scale_budget_freezes_the_scale_without_counting_saturation(self) -> None:
+        frozen = dataclasses.replace(POLICY, scale_budget=0.0)
+        assert frozen.frozen_scale
+        # A spread of +-50 around the anchor's centre: the centre stays, the scale would balloon.
+        result = rebuild(_profile(), _buffer([-50.0, 0.0, 50.0]), tau=0.6, now=1.0, policy=frozen)
+        assert result.profile is not None
+        assert result.profile.scale == (1.0,)
+        assert result.saturated is False
+        assert result.profile.saturations == 0

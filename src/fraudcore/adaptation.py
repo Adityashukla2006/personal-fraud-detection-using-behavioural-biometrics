@@ -17,8 +17,16 @@ looked.
 
 The scale is bounded too, because inflating it is an evasion a centre-only budget would miss. It
 has its own budget: centre displacement is a distance in scaled units, scale displacement is a
-relative change, and one number cannot calibrate both. Sharing a single budget let the scale grow
-several-fold under a budget sized for centre drift, which is how the first poisoning run found it.
+relative change, and one number cannot calibrate both. A scale budget of zero freezes the scale at
+the anchor's, which the poisoning experiment found to resist impersonation better than adapting it.
+
+Where the anchor comes from. Section 7.8's cost argument says an attacker needs one passkey step-up
+of their own per budget's worth of progress. That holds only if the anchor is independent of the
+attacker. Re-anchoring to the freshly projected profile (``anchor="projected"``) breaks it: every
+step-up the genuine user passes resets the budget from a position the attacker has already pulled,
+so the attacker gains a new budget each time the victim verifies. ``anchor="verified"`` re-anchors
+instead to the robust centre of fully trusted sessions only, which no attacker without the
+authenticator can contribute to.
 """
 
 from __future__ import annotations
@@ -47,6 +55,9 @@ FULL_TRUST = 1.0
 
 Verification = Literal["stepup", "passkey_signin", "password"]
 C_VERIFY: Mapping[str, float] = {"stepup": 1.0, "passkey_signin": 0.6, "password": 0.3}
+
+AnchorSource = Literal["projected", "verified"]
+ANCHOR_SOURCES: tuple[str, ...] = ("projected", "verified")
 
 # The detector's dispersion is a mean absolute deviation, but a robust rebuild needs the median
 # absolute deviation. Under normality they differ by a constant factor; applying it keeps an adapted
@@ -140,9 +151,11 @@ def non_behavioural_alert(scores: Mapping[str, ChannelScore], model: FusionModel
 class AdaptationPolicy:
     """Adaptation parameters.
 
-    ``budget`` bounds centre displacement, in scaled units. ``scale_budget`` bounds the mean
-    relative change of the scale. Both are required, with no default, because each is calibrated
-    from measured genuine drift and a guessed value would silently decide the security property.
+    ``budget`` bounds centre displacement, in scaled units, and must be positive. ``scale_budget``
+    bounds the mean relative change of the scale; zero freezes the scale. Both are required, with no
+    default, because each is calibrated or chosen from measured drift and a guessed value would
+    silently decide the security property. ``anchor`` chooses where a re-anchor moves the anchor to;
+    see the module docstring.
     """
 
     budget: float
@@ -152,18 +165,25 @@ class AdaptationPolicy:
     rebuild_every: int = 20
     cold_start_sessions: int = 5
     reanchor_days: float = 30.0
+    anchor: AnchorSource = "projected"
 
     def __post_init__(self) -> None:
-        for name in ("budget", "scale_budget"):
-            value = getattr(self, name)
-            if not (math.isfinite(value) and value > 0):
-                raise ValueError(f"{name} must be positive and finite")
+        if not (math.isfinite(self.budget) and self.budget > 0):
+            raise ValueError("budget must be positive and finite")
+        if not (math.isfinite(self.scale_budget) and self.scale_budget >= 0):
+            raise ValueError("scale_budget must be finite and non-negative (0 freezes the scale)")
         if not 0 < self.tau_min <= FULL_TRUST:
             raise ValueError("tau_min must be in (0, 1]")
         if not 1 <= self.cold_start_sessions <= self.buffer_capacity:
             raise ValueError("need 1 <= cold_start_sessions <= buffer_capacity")
         if self.rebuild_every < 1 or self.reanchor_days <= 0:
             raise ValueError("rebuild_every and reanchor_days must be positive")
+        if self.anchor not in ANCHOR_SOURCES:
+            raise ValueError(f"anchor must be one of {ANCHOR_SOURCES}")
+
+    @property
+    def frozen_scale(self) -> bool:
+        return self.scale_budget == 0
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> AdaptationPolicy:
@@ -175,6 +195,7 @@ class AdaptationPolicy:
             rebuild_every=int(data["rebuild_every"]),
             cold_start_sessions=int(data["cold_start_sessions"]),
             reanchor_days=float(data["reanchor_days"]),
+            anchor=str(data["anchor"]),  # type: ignore[arg-type]
         )
 
     @classmethod
@@ -337,7 +358,7 @@ def project(
     """Move no further than ``budget`` from the anchor along the line to the candidate.
 
     Returns the accepted point and whether the budget bound it. A candidate exactly at the budget is
-    accepted unchanged and does not count as saturation.
+    accepted unchanged and does not count as saturation. A budget of zero returns the anchor.
     """
     if distance <= budget:
         return tuple(candidate), False
@@ -376,6 +397,35 @@ class Rebuild:
     reanchored: bool
 
 
+def _verified_anchor(
+    profile: Profile, sessions: Sequence[BufferedSession], policy: AdaptationPolicy
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """The anchor a re-anchor moves to under ``anchor="verified"``.
+
+    The robust centre of fully trusted sessions only, itself bounded by the budgets from the old
+    anchor, so one verification cannot jump the anchor either. The scale is only re-estimated once
+    there are as many verified sessions as a cold start needs; the dispersion of one or two points
+    would collapse it to the floor.
+    """
+    verified = [session for session in sessions if session.weight >= FULL_TRUST]
+    if not verified:
+        return profile.anchor_centre, profile.anchor_scale
+
+    points = [session.features for session in verified]
+    weights = [session.weight for session in verified]
+    candidate = weighted_geometric_median(points, weights)
+    distance = displacement(candidate, profile.anchor_centre, profile.anchor_scale)
+    centre, _ = project(candidate, profile.anchor_centre, distance, policy.budget)
+
+    scale = profile.anchor_scale
+    if len(verified) >= policy.cold_start_sessions and not policy.frozen_scale:
+        candidate_scale = weighted_scale(points, weights, candidate)
+        spread = scale_displacement(candidate_scale, profile.anchor_scale)
+        projected, _ = project(candidate_scale, profile.anchor_scale, spread, policy.scale_budget)
+        scale = tuple(max(DISPERSION_FLOOR, value) for value in projected)
+    return centre, scale
+
+
 def rebuild(
     profile: Profile | None,
     buffer: Sequence[BufferedSession],
@@ -386,7 +436,7 @@ def rebuild(
     """Recompute a profile from its buffer under the centre and scale budgets.
 
     ``tau`` is the trust of the session that triggered the rebuild. A fully trusted session, which
-    only a passed step-up can produce, re-anchors: the budgets are measured from the new position
+    only a passed step-up can produce, re-anchors: the budgets are measured from the new anchor
     from then on. So does a quiet period of ``reanchor_days`` without saturation. Nothing else does.
     """
     sessions = bounded(buffer, policy.buffer_capacity)
@@ -409,10 +459,14 @@ def rebuild(
         raise ValueError("buffer width does not match the profile")
 
     distance = displacement(centre, profile.anchor_centre, profile.anchor_scale)
-    spread = scale_displacement(scale, profile.anchor_scale)
     new_centre, centre_bound = project(centre, profile.anchor_centre, distance, policy.budget)
-    new_scale, scale_bound = project(scale, profile.anchor_scale, spread, policy.scale_budget)
-    new_scale = tuple(max(DISPERSION_FLOOR, value) for value in new_scale)
+    if policy.frozen_scale:
+        # A frozen scale is a design choice, not a bound hit, so it never counts as saturation.
+        new_scale, scale_bound = profile.anchor_scale, False
+    else:
+        spread = scale_displacement(scale, profile.anchor_scale)
+        new_scale, scale_bound = project(scale, profile.anchor_scale, spread, policy.scale_budget)
+        new_scale = tuple(max(DISPERSION_FLOOR, value) for value in new_scale)
     saturated = centre_bound or scale_bound
 
     quiet_since = (
@@ -424,11 +478,18 @@ def rebuild(
         not saturated and now - quiet_since >= policy.reanchor_days * SECONDS_PER_DAY
     )
 
+    if not reanchor:
+        anchor_centre, anchor_scale = profile.anchor_centre, profile.anchor_scale
+    elif policy.anchor == "verified":
+        anchor_centre, anchor_scale = _verified_anchor(profile, sessions, policy)
+    else:
+        anchor_centre, anchor_scale = new_centre, new_scale
+
     updated = Profile(
         centre=new_centre,
         scale=new_scale,
-        anchor_centre=new_centre if reanchor else profile.anchor_centre,
-        anchor_scale=new_scale if reanchor else profile.anchor_scale,
+        anchor_centre=anchor_centre,
+        anchor_scale=anchor_scale,
         anchored_at=now if reanchor else profile.anchored_at,
         last_saturated_at=now if saturated else profile.last_saturated_at,
         saturations=profile.saturations + int(saturated),
