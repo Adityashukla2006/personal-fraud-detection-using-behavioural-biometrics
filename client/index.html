@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BFD Bank</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script type="module" src="app.mjs"></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>BFD Bank</h1>
+        <p class="note">Research demo. Only keystroke timing leaves this page, never what you type.</p>
+      </header>
+
+      <section id="signin" class="card">
+        <h2>Sign in</h2>
+        <form id="signin-form">
+          <label>Email
+            <input id="email" type="email" autocomplete="username webauthn" required data-capture="login" />
+          </label>
+          <label>Password
+            <input id="password" type="password" autocomplete="current-password" data-capture="login" />
+          </label>
+          <label id="new-password-row" hidden>New password
+            <input id="new-password" type="password" autocomplete="new-password" minlength="12" />
+          </label>
+          <div class="row">
+            <button type="submit">Sign in with password</button>
+            <button type="button" id="passkey-signin" class="secondary">Sign in with passkey</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="account" class="card" hidden>
+        <div class="row spread">
+          <span id="who"></span>
+          <span class="row">
+            <button type="button" id="register-passkey" class="secondary">Add a passkey</button>
+            <button type="button" id="signout" class="secondary">Sign out</button>
+          </span>
+        </div>
+        <h2>Transfer</h2>
+        <form id="transfer-form">
+          <label>Payee account
+            <input id="payee" inputmode="numeric" autocomplete="off" required data-capture="payee" />
+          </label>
+          <label>Amount
+            <input id="amount" inputmode="decimal" autocomplete="off" required data-capture="amount" />
+          </label>
+          <button type="submit">Confirm transfer</button>
+        </form>
+      </section>
+
+      <section id="decision" class="card" hidden aria-live="polite">
+        <h2>Decision <span class="muted">at <span id="decision-checkpoint"></span></span></h2>
+        <p class="action" id="decision-action"></p>
+        <dl>
+          <dt>Risk</dt><dd id="decision-risk"></dd>
+          <dt>Confidence</dt><dd id="decision-confidence"></dd>
+          <dt>Policy</dt><dd id="decision-constraints"></dd>
+          <dt>Latency</dt><dd id="decision-latency"></dd>
+        </dl>
+        <h3>Top contributions</h3>
+        <ol id="decision-contributions"></ol>
+      </section>
+
+      <p id="status" role="status"></p>
+    </main>
+  </body>
+</html>
