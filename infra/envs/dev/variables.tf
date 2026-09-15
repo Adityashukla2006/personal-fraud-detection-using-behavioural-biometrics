@@ -9,6 +9,12 @@ variable "budget_limit_usd" {
   default     = 5
 }
 
+variable "alert_email_enabled" {
+  description = "Deliver restrict and block alerts by email. Turn off during load runs."
+  type        = bool
+  default     = true
+}
+
 variable "alert_email" {
   description = "Address that receives budget alerts. Set in terraform.tfvars, which is not committed."
   type        = string

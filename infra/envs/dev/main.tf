@@ -8,9 +8,10 @@ locals {
 module "observability" {
   source = "../../modules/observability"
 
-  name_prefix      = local.name_prefix
-  budget_limit_usd = var.budget_limit_usd
-  alert_email      = var.alert_email
+  name_prefix         = local.name_prefix
+  budget_limit_usd    = var.budget_limit_usd
+  alert_email         = var.alert_email
+  alert_email_enabled = var.alert_email_enabled
 }
 
 module "data" {

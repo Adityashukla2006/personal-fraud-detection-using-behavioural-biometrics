@@ -48,11 +48,20 @@ resource "aws_sns_topic" "alerts" {
   kms_master_key_id = "alias/aws/sns"
 }
 
-# Email subscriptions must be confirmed from the inbox before alerts are delivered.
+# Email subscriptions must be confirmed from the inbox before alerts are delivered. The switch lets
+# a load run pause delivery without touching the workflow: alerts are still published and measured,
+# they just reach no inbox. Re-enabling sends a fresh confirmation email.
 resource "aws_sns_topic_subscription" "alerts_email" {
+  count = var.alert_email_enabled ? 1 : 0
+
   topic_arn = aws_sns_topic.alerts.arn
   protocol  = "email"
   endpoint  = var.alert_email
+}
+
+moved {
+  from = aws_sns_topic_subscription.alerts_email
+  to   = aws_sns_topic_subscription.alerts_email[0]
 }
 
 # Latency is a reported result, so dev traces every request by default rather than the 5% default
