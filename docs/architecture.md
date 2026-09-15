@@ -194,7 +194,9 @@ Per destination, across all users:
 - Fan-in to fan-out ratio, and time from first inbound to first outbound.
 - Sender-set overlap with already-flagged accounts.
 
-These write to `PAYEE#<id> / RISK` and `AGG#<id> / WINDOW#<window>`. The fast path reads them by key at no computational cost.
+These write to `PAYEE#<id> / RISK`, `AGG#<uid> / WINDOW#<window>` and, per recently added payee, `AGG#<uid> / EDGE#<pid>`. The fast path reads them by key at no computational cost.
+
+Implementation. EventBridge Scheduler invokes the aggregator Lambda at 02:00 India time. It runs one Athena query over a Glue table with partition projection on the lake's `type=` and `dt=` layout, so there is no crawler: released transfers from the last 90 days, each joined to the behaviour score of its own confirmation decision. The rows go to `fraudcore.batch`, which holds every formula, so the aggregator only queries and writes. An edge's siphoning score weighs volume (0.3), regularity (0.2), amounts just under the user's p95 (0.1) and identity (0.4). Volume, regularity and novelty describe a new tutor's fees as well as theft, so an edge is flagged only when identity also corroborates: the payee's transfers are typed at least 30% further from the profile than the user's transfers to every other payee. The graded score raises the payee channel as the `siphoning` feature, ageing to nothing over a week like global payee risk. A flag corroborates a block like a flagged payee. Siphoning is evaluated by replaying weeks of lake history against the deployed aggregator (`simulator/run_siphoning.py`), with genuine controls that start paying a new payee on the siphon's exact schedule.
 
 **Retroactive detection is inherent here.** For siphoning, the batch layer detects after transfers have settled, so the response is account-level: freeze the payee edge, require re-verification, notify, review prior transfers. The metric "money lost before detection" is structurally nonzero for this class, and is reported as such.
 
@@ -215,6 +217,7 @@ Single DynamoDB table, on-demand capacity, one GSI.
 | User aggregates | `AGG#<uid>` | `WINDOW#<window>` | `amount_p50`, `amount_p95`, `daily_count_p95`, `history_count`, `new_payee_volume_30d`, `hour_histogram`, `computed_at` |
 | Session | `SESS#<sid>` | `META` | `uid`, keystroke timing fields so far, TTL 1 day |
 | Decision | `DEC#<did>` | `META` | scores, confidences, contributions, action, TTL 30 days |
+| Siphoning edge | `AGG#<uid>` | `EDGE#<pid>` | `siphon_score`, `flagged`, `volume`, `regularity`, `band`, `identity`, `transfers`, `cumulative`, `interval_cv`, `identity_gap`, `computed_at`, TTL 7 days |
 | Replay history | `REPLAY#<uid>` | `HISTORY` | `sessions` (shingle hashes of the last 50 confirmed sessions), `version`, TTL 90 days |
 | Verified step-up | `USER#<uid>` | `VERIFIED#<decision_id>` | `transfer_id`, `method`, `verified_at`, `received_at`, TTL 180 days |
 | Ledger balance | `LEDGER#<uid>` | `BALANCE` | `balance`, `opening` |
