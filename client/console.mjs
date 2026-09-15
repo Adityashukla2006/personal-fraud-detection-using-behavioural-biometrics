@@ -249,9 +249,10 @@ async function csv(path) {
 const percent = (value) => `${(Number(value) * 100).toFixed(1)}%`;
 
 async function loadResearch() {
-  const [policies, budget, latency, baseline] = await Promise.all([
-    csv("research/tables/poisoning_policies.csv"),
-    csv("research/tables/adaptation_budget.csv"),
+  const [variants, detection, fusion, latency, baseline] = await Promise.all([
+    csv("research/tables/poisoning_variants.csv"),
+    csv("research/tables/phase8_detection.csv"),
+    csv("research/tables/fusion_evaluation.csv"),
     csv("research/tables/phase4_latency.csv"),
     csv("research/tables/baseline_eer.csv"),
   ]);
@@ -265,18 +266,25 @@ async function loadResearch() {
   for (const row of latency) {
     tiles.push(tile(row.measure === "handler" ? "Handler latency p50 / p95" : "Round trip p50 / p95", `${Number(row.p50_ms).toFixed(0)} / ${Number(row.p95_ms).toFixed(0)} ms`, `${row.samples} warm requests`));
   }
-  for (const row of policies) {
-    tiles.push(tile(`${row.policy} impersonation`, percent(row.impersonation_mean), `false rejection under drift ${percent(row.false_rejection_mean)}`));
+  if (variants.length) {
+    tiles.push(tile("P0 static impersonation", percent(variants[0].P0_impersonation), `false rejection under drift ${percent(variants[0].P0_false_rejection)}`));
   }
-  if (budget.length) {
-    tiles.push(tile("Calibrated budgets", `${Number(budget[0].budget).toFixed(2)} / ${Number(budget[0].scale_budget).toFixed(2)}`, "centre / scale, 95th percentile of genuine day-to-day drift"));
+  for (const row of variants) {
+    tiles.push(tile(`P3 ${row.config.replaceAll("_", " ")}`, percent(row.P3_impersonation), `impersonation; false rejection under drift ${percent(row.P3_false_rejection)}`));
+  }
+  for (const row of fusion.filter((entry) => entry.model === "fitted")) {
+    tiles.push(tile(`Fitted fusion, ${row.attack}`, percent(row.detection_rate), row.attack === "genuine" ? "friction on held-out subjects" : "detected on held-out subjects"));
+  }
+  for (const row of detection) {
+    tiles.push(tile(`Live, ${row.attack}`, percent(row.detection_rate), row.attack === "genuine" ? `friction over ${row.sessions} sessions` : `detected over ${row.sessions} sessions`));
   }
   $("research-numbers").replaceChildren(...tiles);
 
   const figures = [
     ["research/figures/baseline_eer.png", "Per-subject EER on the CMU benchmark: the 31 raw per-key features against the 9 deployable aggregates."],
-    ["research/figures/poisoning_policies.png", "Poisoning, P0 to P3, attacker with a hijacked enrolled-device session. With budgets at the 95th percentile of genuine drift, P3 tolerates drift best but does not resist impersonation: adapting to genuine drift widens the scale. Open finding, under review."],
-    ["research/figures/budget_tradeoff.png", "Both budgets swept together. The curve is flat: at this drift level the budget does not bind, which is why P3's impersonation does not improve."],
+    ["research/figures/poisoning_variants.png", "Poisoning, every variant tried, P3 against the static profile. Each variant was fixed before any ran and all are shown. No variant makes adaptation resist impersonation better than never adapting; the best trades a smaller rise in impersonation for far lower false rejection under genuine drift."],
+    ["research/figures/poisoning_policies.png", "The first full run, P0 to P3, with budgets at the 95th percentile of genuine drift and the scale adapted. P3 tolerates drift best but accepts the attacker most."],
+    ["research/figures/budget_tradeoff.png", "That run's budgets swept together. The curve is flat: at that drift level the budget does not bind."],
     ["research/figures/poisoning_policies_shared_budget.png", "The first run, with one budget shared between centre and scale: the flaw that led to a separate scale budget."],
   ];
   $("research-figures").replaceChildren(
