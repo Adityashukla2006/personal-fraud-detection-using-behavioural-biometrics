@@ -9,6 +9,8 @@ testpaths = ["tests/unit"]
 # deployed stack; reach them with 'make test-integration'.
 pythonpath = [".", "src"]
 addopts = "-q --strict-markers"
+# Integration tests are named phase_0N_*.py by project convention.
+python_files = ["test_*.py", "phase_*.py"]
 markers = [
     "integration: requires the deployed dev stack, not run by 'make test'",
 ]

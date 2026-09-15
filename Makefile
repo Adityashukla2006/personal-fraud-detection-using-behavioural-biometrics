@@ -11,6 +11,10 @@ export PYTHONPATH := src
 AWS_PROFILE ?= bfd-admin
 export AWS_PROFILE
 
+# Override where terraform is not on PATH. Exported so integration tests call the same binary.
+TERRAFORM ?= terraform
+export TERRAFORM
+
 DEV := infra/envs/dev
 
 .PHONY: help install dataset test test-integration lint format baseline clean \

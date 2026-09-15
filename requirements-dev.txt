@@ -2,3 +2,6 @@
 
 pytest>=8.0
 ruff>=0.6
+
+# Integration tests only. boto3 is the one dependency the Lambda runtime already provides.
+boto3>=1.35
