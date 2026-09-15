@@ -35,9 +35,12 @@ desensitise that feature for every session afterwards.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Literal
+
+from fraudcore.features import DEVICE_CLASSES, DeviceClass
 
 Scaling = Literal["mad", "std"]
 
@@ -156,3 +159,34 @@ class ReferenceProfile:
                 f"profile expects {len(self.feature_names)}"
             )
         return values
+
+
+@dataclass(frozen=True)
+class DeviceProfiles:
+    """One user's reference profiles, one per device class.
+
+    Much of what looks like behavioural drift is a person switching from laptop to phone, so a
+    session is only ever scored against the profile for its own device class. There is deliberately
+    no fallback to another class: a missing profile returns ``None``, which the caller reports as
+    no identity evidence rather than as an anomaly.
+    """
+
+    by_class: Mapping[DeviceClass, ReferenceProfile]
+
+    def __post_init__(self) -> None:
+        unknown = sorted(set(self.by_class) - set(DEVICE_CLASSES))
+        if unknown:
+            raise ValueError(f"unknown device classes {unknown}, expected {DEVICE_CLASSES}")
+        if len({profile.feature_names for profile in self.by_class.values()}) > 1:
+            raise ValueError("every device-class profile must share one feature set")
+        object.__setattr__(self, "by_class", MappingProxyType(dict(self.by_class)))
+
+    def profile_for(self, device_class: DeviceClass) -> ReferenceProfile | None:
+        if device_class not in DEVICE_CLASSES:
+            raise ValueError(f"unknown device class {device_class!r}")
+        return self.by_class.get(device_class)
+
+    def score(self, device_class: DeviceClass, session: Sequence[float]) -> float | None:
+        """Score against this device class's profile, or ``None`` if the class has none yet."""
+        profile = self.profile_for(device_class)
+        return None if profile is None else profile.score(session)
