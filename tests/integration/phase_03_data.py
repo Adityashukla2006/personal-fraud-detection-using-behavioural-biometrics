@@ -119,6 +119,11 @@ class TestLeastPrivilege:
             ("adaptation", "dynamodb:PutItem", "DEC#d1", "implicitDeny"),
             ("ledger", "dynamodb:GetItem", "USER#u1", "implicitDeny"),
             ("aggregator", "dynamodb:PutItem", "PAYEE#p1", "allowed"),
+            ("aggregator", "dynamodb:PutItem", "AGG#u1", "allowed"),
+            # Only adaptation writes profiles; the aggregator cannot reach the USER# partition.
+            ("aggregator", "dynamodb:PutItem", "USER#u1", "implicitDeny"),
+            ("scoring", "dynamodb:BatchGetItem", "AGG#u1", "allowed"),
+            ("scoring", "dynamodb:PutItem", "AGG#u1", "implicitDeny"),
         ],
     )
     def test_each_role_reaches_only_its_own_prefixes(

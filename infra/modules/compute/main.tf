@@ -14,7 +14,7 @@ locals {
   # key (dynamodb:LeadingKeys) but not by sort key, so every rule here is a partition prefix.
   functions = {
     scoring = {
-      read  = ["USER#*", "PAYEE#*", "SESS#*"]
+      read  = ["USER#*", "PAYEE#*", "AGG#*", "SESS#*"]
       write = ["SESS#*", "DEC#*"]
     }
     # The only writer of profile and buffer items.
@@ -22,11 +22,11 @@ locals {
       read  = ["USER#*"]
       write = ["USER#*"]
     }
-    # Writes USER#<uid> / AGG#<window> and PAYEE#<pid> / RISK. Sharing the USER# partition with
-    # profiles means IAM alone cannot stop this role overwriting a profile item.
+    # Writes AGG#<uid> / WINDOW#<window> and PAYEE#<pid> / RISK. Aggregates have their own
+    # partition precisely so this role never needs, and never gets, write access to USER#.
     aggregator = {
       read  = []
-      write = ["USER#*", "PAYEE#*"]
+      write = ["AGG#*", "PAYEE#*"]
     }
     ledger = {
       read  = ["LEDGER#*"]

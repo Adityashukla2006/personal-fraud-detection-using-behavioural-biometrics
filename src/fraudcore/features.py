@@ -288,8 +288,8 @@ def _recency(days: float | None, window: float) -> float:
 class UserAggregates:
     """A user's rolling transaction statistics, precomputed by the slow plane.
 
-    Read from ``USER#<uid> / AGG#<window>``. ``history_count`` is how many transfers the statistics
-    were computed over, which is what the transaction channel's confidence rests on.
+    Read from ``AGG#<uid> / WINDOW#<window>``. ``history_count`` is how many transfers the
+    statistics were computed over, which is what the transaction channel's confidence rests on.
     """
 
     amount_p50: float

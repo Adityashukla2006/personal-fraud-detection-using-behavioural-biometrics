@@ -194,7 +194,7 @@ Per destination, across all users:
 - Fan-in to fan-out ratio, and time from first inbound to first outbound.
 - Sender-set overlap with already-flagged accounts.
 
-These write to `PAYEE#<id> / RISK` and `USER#<id> / AGG#<window>`. The fast path reads them by key at no computational cost.
+These write to `PAYEE#<id> / RISK` and `AGG#<id> / WINDOW#<window>`. The fast path reads them by key at no computational cost.
 
 **Retroactive detection is inherent here.** For siphoning, the batch layer detects after transfers have settled, so the response is account-level: freeze the payee edge, require re-verification, notify, review prior transfers. The metric "money lost before detection" is structurally nonzero for this class, and is reported as such.
 
@@ -211,13 +211,13 @@ Single DynamoDB table, on-demand capacity, one GSI.
 | Device | `USER#<uid>` | `DEV#<fingerprint>` | `first_seen`, `session_count`, `passkey_bound`, `device_class` |
 | User-payee edge | `USER#<uid>` | `PAYEE#<pid>` | `first_seen`, `verified_at`, `txn_count`, `cum_amount`, `mean_identity_score`, `interval_cv` |
 | Global payee risk | `PAYEE#<pid>` | `RISK` | `distinct_senders_7d`, `distinct_senders_30d`, `new_sender_fraction`, `fanin_fanout_ratio`, `risk_score`, `computed_at` |
-| User aggregates | `USER#<uid>` | `AGG#<window>` | `amount_p50`, `amount_p95`, `new_payee_volume_30d`, `hour_histogram`, `computed_at` |
+| User aggregates | `AGG#<uid>` | `WINDOW#<window>` | `amount_p50`, `amount_p95`, `daily_count_p95`, `history_count`, `new_payee_volume_30d`, `hour_histogram`, `computed_at` |
 | Session | `SESS#<sid>` | `META` | checkpoint features, running scores, TTL 1 day |
 | Decision | `DEC#<did>` | `META` | scores, confidences, contributions, action, TTL 30 days |
 
 GSI1: `GSI1PK = USER#<uid>`, `GSI1SK = TS#<iso8601>` over decision items, for chronological per-user queries during evaluation and demos.
 
-Notes. The buffer is stored as separate items rather than a list inside the profile, so eviction is a TTL rather than a read-modify-write. `version` supports optimistic concurrency on profile updates. Anchor values are stored alongside current values because the budget in section 7 is defined relative to the anchor, not the previous state.
+Notes. User aggregates have their own partition rather than living under `USER#<uid>`. IAM can scope DynamoDB access by partition key but not by sort key, so a shared partition would force the aggregator's role to write `USER#` items, and nothing but convention would stop it overwriting a profile. With a separate partition, "the adaptation role is the only writer of profile items" is enforced by IAM. The buffer is stored as separate items rather than a list inside the profile, so eviction is a TTL rather than a read-modify-write. `version` supports optimistic concurrency on profile updates. Anchor values are stored alongside current values because the budget in section 7 is defined relative to the anchor, not the previous state.
 
 ---
 
