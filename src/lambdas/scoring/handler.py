@@ -294,6 +294,7 @@ def _evidence(
         edge=state.edge,
         risk=state.risk,
         replay_history=state.replay_history,
+        edge_risk=state.edge_risk,
     )
 
 

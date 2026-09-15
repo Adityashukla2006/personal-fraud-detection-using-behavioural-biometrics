@@ -283,7 +283,7 @@ class TestPayeeFeatures:
         edge = features.PayeeEdge(days_since_first_seen=6.0, verified=False)
         risk = features.PayeeRisk(risk_score=0.4, hours_since_computed=42.0)
         assert features.payee_features(edge, risk) == pytest.approx(
-            {"payee_novelty": 0.8, "payee_unverified": 1.0, "global_risk": 0.4}
+            {"payee_novelty": 0.8, "payee_unverified": 1.0, "global_risk": 0.4, "siphoning": 0.0}
         )
 
     def test_a_never_used_payee_is_new_and_unverified(self) -> None:
@@ -291,6 +291,7 @@ class TestPayeeFeatures:
             "payee_novelty": 1.0,
             "payee_unverified": 1.0,
             "global_risk": 0.0,
+            "siphoning": 0.0,
         }
 
     def test_a_verified_payee_at_the_new_payee_window_is_established(self) -> None:

@@ -20,6 +20,7 @@ from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
 from fraudcore.features import (
     DeviceRecord,
+    EdgeRisk,
     KeystrokeTiming,
     PayeeEdge,
     PayeeRisk,
@@ -69,6 +70,7 @@ class ScoringState:
     replay_sessions: tuple[tuple[int, ...], ...] = ()
     replay_version: int | None = None
     """The history item's version, or None when the user has no history yet."""
+    edge_risk: EdgeRisk | None = None
 
     @property
     def replay_history(self) -> frozenset[int]:
@@ -145,6 +147,7 @@ class Store:
             payee = request.transaction.payee_id
             keys["edge"] = (user, f"PAYEE#{payee}")
             keys["risk"] = (f"PAYEE#{payee}", "RISK")
+            keys["edge_risk"] = (f"AGG#{uid}", f"EDGE#{payee}")
 
         items = self._batch_get(list(keys.values()))
         found = {name: items.get(key) for name, key in keys.items()}
@@ -218,6 +221,14 @@ class Store:
                 flagged=bool(item.get("flagged", False)),
             )
 
+        edge_risk = None
+        if item := found.get("edge_risk"):
+            edge_risk = EdgeRisk(
+                siphon_score=min(1.0, max(0.0, float(item["siphon_score"]))),
+                hours_since_computed=_elapsed(item["computed_at"], now, SECONDS_PER_HOUR),
+                flagged=bool(item.get("flagged", False)),
+            )
+
         aggregates = None
         if item := found["aggregates"]:
             aggregates = UserAggregates(
@@ -252,6 +263,7 @@ class Store:
             session_fields=session_fields,
             replay_sessions=replay_sessions,
             replay_version=replay_version,
+            edge_risk=edge_risk,
         )
 
     def save_session(

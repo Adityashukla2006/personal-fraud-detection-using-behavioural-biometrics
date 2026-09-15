@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from fraudcore.features import (
     FEATURE_NAMES,
+    EdgeRisk,
     KeystrokeTiming,
     PayeeEdge,
     PayeeRisk,
@@ -68,6 +69,21 @@ class SessionEvidence:
     edge: PayeeEdge | None
     risk: PayeeRisk | None
     replay_history: frozenset[int] | None = None
+    edge_risk: EdgeRisk | None = None
+
+
+def batch_flag(evidence: SessionEvidence) -> bool:
+    """A slow-plane flag on this transfer's payee, or on this user's payments to it.
+
+    A flag only corroborates a decision about a transfer to that payee, so without a transfer there
+    is nothing for it to corroborate.
+    """
+    if evidence.transfer is None:
+        return False
+    return bool(
+        (evidence.risk is not None and evidence.risk.flagged)
+        or (evidence.edge_risk is not None and evidence.edge_risk.flagged)
+    )
 
 
 def channel_scores(evidence: SessionEvidence) -> dict[str, ChannelScore]:
@@ -91,7 +107,11 @@ def channel_scores(evidence: SessionEvidence) -> dict[str, ChannelScore]:
             else NO_EVIDENCE
         ),
         "context": context_channel(evidence.context),
-        "payee": payee_channel(evidence.edge, evidence.risk) if has_transfer else NO_EVIDENCE,
+        "payee": (
+            payee_channel(evidence.edge, evidence.risk, evidence.edge_risk)
+            if has_transfer
+            else NO_EVIDENCE
+        ),
     }
 
 
@@ -110,8 +130,6 @@ def score_session(
 ) -> Scored:
     scores = channel_scores(evidence)
     fused = fuse(model, scores)
-    # A batch flag on a payee only corroborates a decision about a transfer to that payee.
-    batch_flag = (
-        evidence.transfer is not None and evidence.risk is not None and evidence.risk.flagged
+    return Scored(
+        scores, fused, decide(fused, model, thresholds, checkpoint, batch_flag(evidence))
     )
-    return Scored(scores, fused, decide(fused, model, thresholds, checkpoint, batch_flag))

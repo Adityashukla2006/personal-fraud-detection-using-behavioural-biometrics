@@ -44,6 +44,7 @@ from typing import Literal
 from fraudcore.features import (
     DEVICE_CLASSES,
     DeviceClass,
+    EdgeRisk,
     KeystrokeTiming,
     PayeeEdge,
     PayeeRisk,
@@ -362,20 +363,28 @@ def context_channel(context: SessionContext) -> ChannelScore:
 PAYEE_RISK_STALE_HOURS = 168.0
 
 
-def payee_channel(edge: PayeeEdge | None, risk: PayeeRisk | None) -> ChannelScore:
+def _freshness(hours_since_computed: float) -> float:
+    return _saturating(PAYEE_RISK_STALE_HOURS - hours_since_computed, PAYEE_RISK_STALE_HOURS)
+
+
+def payee_channel(
+    edge: PayeeEdge | None, risk: PayeeRisk | None, edge_risk: EdgeRisk | None = None
+) -> ChannelScore:
     """Payee novelty and verification for this user, plus cross-user destination risk.
 
     The edge facts are read live and always current; the global risk is computed in batch and ages.
     Half the confidence rests on each, and the global half decays to nothing over a week, so a
     failing aggregator shrinks the channel instead of freezing a stale verdict into it
     (architecture section 14).
+
+    The batch siphoning signal for this user's payments to the payee ages the same way, so a signal
+    a week old contributes nothing rather than a frozen verdict.
     """
-    freshness = (
-        0.0
-        if risk is None
-        else _saturating(PAYEE_RISK_STALE_HOURS - risk.hours_since_computed, PAYEE_RISK_STALE_HOURS)
-    )
+    freshness = 0.0 if risk is None else _freshness(risk.hours_since_computed)
+    values = payee_features(edge, risk, edge_risk)
+    if edge_risk is not None:
+        values["siphoning"] *= _freshness(edge_risk.hours_since_computed)
     return ChannelScore(
-        score=sum(payee_features(edge, risk).values()),
+        score=sum(values.values()),
         confidence=0.5 + 0.5 * freshness,
     )

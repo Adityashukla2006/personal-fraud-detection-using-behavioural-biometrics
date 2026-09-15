@@ -147,6 +147,26 @@ class TestLoad:
         store.save_replay(UID, store.load(UID, _request(), NOW), (long_timing,), NOW)
         assert client.puts[-1]["ConditionExpression"] == "attribute_not_exists(PK)"
 
+    def test_a_batch_siphoning_signal_is_read_for_the_transfers_payee(self) -> None:
+        item = {
+            "PK": f"AGG#{UID}",
+            "SK": f"EDGE#{PAYEE}",
+            "siphon_score": Decimal("0.75"),
+            "flagged": True,
+            "computed_at": int(NOW) - 7200,
+        }
+        client = FakeClient([item])
+        state = Store(client, TABLE).load(UID, _request(transaction=True), NOW)
+        assert (f"AGG#{UID}", f"EDGE#{PAYEE}") in client.requested
+        assert state.edge_risk is not None
+        assert state.edge_risk.siphon_score == pytest.approx(0.75)
+        assert state.edge_risk.hours_since_computed == pytest.approx(2.0)
+        assert state.edge_risk.flagged
+
+    def test_no_transaction_reads_no_siphoning_signal(self) -> None:
+        state = Store(FakeClient(), TABLE).load(UID, _request(), NOW)
+        assert state.edge_risk is None
+
     def test_a_session_too_short_to_shingle_writes_nothing(self) -> None:
         client = FakeClient()
         store = Store(client, TABLE)

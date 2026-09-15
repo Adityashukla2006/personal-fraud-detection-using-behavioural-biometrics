@@ -434,12 +434,36 @@ class PayeeRisk:
             raise ValueError("hours_since_computed cannot be negative")
 
 
-def payee_features(edge: PayeeEdge | None, risk: PayeeRisk | None) -> dict[str, float]:
-    """``edge`` is ``None`` for a payee never sent to; ``risk`` is ``None`` for one never scored."""
+@dataclass(frozen=True)
+class EdgeRisk:
+    """Siphoning signals for this user's payments to this payee, from ``AGG#<uid> / EDGE#<pid>``.
+
+    Computed in batch by ``fraudcore.batch`` over weeks of released transfers. ``flagged`` means the
+    pattern is strong and the typing on this payee's transfers corroborates a second person; like a
+    flagged payee, it can stand in for a second channel under the corroboration rule.
+    """
+
+    siphon_score: float
+    hours_since_computed: float
+    flagged: bool = False
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.siphon_score <= 1.0:
+            raise ValueError(f"siphon_score {self.siphon_score} is outside [0, 1]")
+        if self.hours_since_computed < 0:
+            raise ValueError("hours_since_computed cannot be negative")
+
+
+def payee_features(
+    edge: PayeeEdge | None, risk: PayeeRisk | None, edge_risk: EdgeRisk | None = None
+) -> dict[str, float]:
+    """``edge`` is ``None`` for a payee never sent to; ``risk`` and ``edge_risk`` are ``None`` when
+    the batch layer has not scored them."""
     return {
         "payee_novelty": (
             1.0 if edge is None else _recency(edge.days_since_first_seen, NEW_PAYEE_WINDOW_DAYS)
         ),
         "payee_unverified": 0.0 if edge is not None and edge.verified else 1.0,
         "global_risk": 0.0 if risk is None else risk.risk_score,
+        "siphoning": 0.0 if edge_risk is None else edge_risk.siphon_score,
     }
