@@ -247,3 +247,192 @@ def device_class(max_touch_points: int, coarse_pointer: bool, short_side_px: int
     if max_touch_points <= 0 and not coarse_pointer:
         return "desktop"
     return "tablet" if short_side_px >= TABLET_MIN_SHORT_SIDE else "mobile"
+
+
+# ---------------------------------------------------------------------------------------------
+# Transaction, context and payee features
+#
+# These come from the transfer request and from state the fast path reads by key, never from the
+# behavioural capture payload. The amount below is the amount of the transfer being scored; it is
+# not, and must not become, a field of ``KeystrokeTiming``.
+# ---------------------------------------------------------------------------------------------
+
+HOURS_PER_DAY = 24
+
+# One currency unit, or a tenth of the median, whichever is larger. Floors the spread for a user
+# whose p50 and p95 coincide, so a slightly larger transfer reads as unusual rather than infinite.
+AMOUNT_SPREAD_FLOOR = 1.0
+AMOUNT_SPREAD_FLOOR_FRACTION = 0.1
+
+# Mirrors c_device in architecture section 7.3: a device is enrolled once it has this many prior
+# sessions.
+ENROLLED_DEVICE_SESSIONS = 10
+
+# A credential or contact change inside this window is the classic takeover preparation step.
+STABILITY_WINDOW_DAYS = 7.0
+
+# A payee first used within this window is still new.
+NEW_PAYEE_WINDOW_DAYS = 30.0
+
+
+def _clamp_unit(value: float) -> float:
+    return min(1.0, max(0.0, value))
+
+
+def _recency(days: float | None, window: float) -> float:
+    """1.0 for an event just now, falling linearly to 0.0 at ``window`` days; 0.0 if none."""
+    return 0.0 if days is None else _clamp_unit(1.0 - days / window)
+
+
+@dataclass(frozen=True)
+class UserAggregates:
+    """A user's rolling transaction statistics, precomputed by the slow plane.
+
+    Read from ``USER#<uid> / AGG#<window>``. ``history_count`` is how many transfers the statistics
+    were computed over, which is what the transaction channel's confidence rests on.
+    """
+
+    amount_p50: float
+    amount_p95: float
+    daily_count_p95: float
+    hour_histogram: tuple[float, ...]
+    history_count: int
+
+    def __post_init__(self) -> None:
+        histogram = tuple(float(value) for value in self.hour_histogram)
+        object.__setattr__(self, "hour_histogram", histogram)
+        if len(histogram) != HOURS_PER_DAY:
+            raise ValueError(f"hour_histogram needs {HOURS_PER_DAY} bins, got {len(histogram)}")
+        if min(histogram) < 0:
+            raise ValueError("hour_histogram contains a negative count")
+        if not 0 <= self.amount_p50 <= self.amount_p95:
+            raise ValueError("amount quantiles must satisfy 0 <= p50 <= p95")
+        if self.daily_count_p95 < 0 or self.history_count < 0:
+            raise ValueError("counts cannot be negative")
+
+
+@dataclass(frozen=True)
+class Transfer:
+    """The transfer being scored. ``transfers_24h`` includes this one."""
+
+    amount: float
+    hour: int
+    transfers_24h: int
+
+    def __post_init__(self) -> None:
+        if not (math.isfinite(self.amount) and self.amount > 0):
+            raise ValueError("amount must be positive and finite")
+        if not 0 <= self.hour < HOURS_PER_DAY:
+            raise ValueError(f"hour {self.hour} is outside 0 to 23")
+        if self.transfers_24h < 1:
+            raise ValueError("transfers_24h includes this transfer, so it is at least 1")
+
+
+def transaction_features(transfer: Transfer, aggregates: UserAggregates) -> dict[str, float]:
+    """Amount, hour and velocity relative to this user's own history.
+
+    ``amount_z`` is in units of the user's median-to-p95 spread, so 1.0 is a p95-sized transfer.
+    Quantiles rather than mean and standard deviation, because amounts are heavy-tailed and one
+    large rent payment should not desensitise the channel for a year.
+    """
+    spread = max(
+        aggregates.amount_p95 - aggregates.amount_p50,
+        AMOUNT_SPREAD_FLOOR_FRACTION * aggregates.amount_p50,
+        AMOUNT_SPREAD_FLOOR,
+    )
+    histogram = aggregates.hour_histogram
+    return {
+        "amount_z": (transfer.amount - aggregates.amount_p50) / spread,
+        # Add-one smoothing: 0 at the user's busiest hour, approaching 1 at an hour never used, and
+        # 0 everywhere for an empty histogram rather than a division by zero.
+        "hour_rarity": 1.0 - (histogram[transfer.hour] + 1.0) / (max(histogram) + 1.0),
+        "velocity": transfer.transfers_24h / max(aggregates.daily_count_p95, 1.0),
+    }
+
+
+@dataclass(frozen=True)
+class DeviceRecord:
+    """A device previously seen on this account, from ``USER#<uid> / DEV#<fingerprint>``."""
+
+    session_count: int
+
+    def __post_init__(self) -> None:
+        if self.session_count < 0:
+            raise ValueError("session_count cannot be negative")
+
+
+@dataclass(frozen=True)
+class SessionContext:
+    """Device and account-stability facts for one session.
+
+    ``device`` is ``None`` for a device never seen on this account. The ``days_since`` fields are
+    ``None`` when the credential or contact details have never changed.
+    """
+
+    device: DeviceRecord | None
+    days_since_credential_change: float | None
+    days_since_contact_change: float | None
+    account_sessions: int
+
+    def __post_init__(self) -> None:
+        for days in (self.days_since_credential_change, self.days_since_contact_change):
+            if days is not None and days < 0:
+                raise ValueError("days since a change cannot be negative")
+        if self.account_sessions < 0:
+            raise ValueError("account_sessions cannot be negative")
+
+
+def context_features(context: SessionContext) -> dict[str, float]:
+    if context.device is None:
+        novelty = 1.0
+    elif context.device.session_count < ENROLLED_DEVICE_SESSIONS:
+        novelty = 0.5
+    else:
+        novelty = 0.0
+    return {
+        "device_novelty": novelty,
+        "credential_recency": _recency(context.days_since_credential_change, STABILITY_WINDOW_DAYS),
+        "contact_recency": _recency(context.days_since_contact_change, STABILITY_WINDOW_DAYS),
+    }
+
+
+@dataclass(frozen=True)
+class PayeeEdge:
+    """This user's history with this payee, from ``USER#<uid> / PAYEE#<pid>``."""
+
+    days_since_first_seen: float
+    verified: bool
+
+    def __post_init__(self) -> None:
+        if self.days_since_first_seen < 0:
+            raise ValueError("days_since_first_seen cannot be negative")
+
+
+@dataclass(frozen=True)
+class PayeeRisk:
+    """Cross-user destination risk from ``PAYEE#<pid> / RISK``, computed by the batch aggregator.
+
+    ``flagged`` is the batch-derived flag that the corroboration rule accepts in place of a second
+    channel above threshold (architecture section 8.3).
+    """
+
+    risk_score: float
+    hours_since_computed: float
+    flagged: bool = False
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.risk_score <= 1.0:
+            raise ValueError(f"risk_score {self.risk_score} is outside [0, 1]")
+        if self.hours_since_computed < 0:
+            raise ValueError("hours_since_computed cannot be negative")
+
+
+def payee_features(edge: PayeeEdge | None, risk: PayeeRisk | None) -> dict[str, float]:
+    """``edge`` is ``None`` for a payee never sent to; ``risk`` is ``None`` for one never scored."""
+    return {
+        "payee_novelty": (
+            1.0 if edge is None else _recency(edge.days_since_first_seen, NEW_PAYEE_WINDOW_DAYS)
+        ),
+        "payee_unverified": 0.0 if edge is not None and edge.verified else 1.0,
+        "global_risk": 0.0 if risk is None else risk.risk_score,
+    }

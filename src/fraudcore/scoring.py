@@ -45,8 +45,16 @@ from fraudcore.features import (
     DEVICE_CLASSES,
     DeviceClass,
     KeystrokeTiming,
+    PayeeEdge,
+    PayeeRisk,
+    SessionContext,
+    Transfer,
+    UserAggregates,
+    context_features,
     interval_cv,
+    payee_features,
     timing_shingles,
+    transaction_features,
 )
 
 Scaling = Literal["mad", "std"]
@@ -289,4 +297,66 @@ def automation_channel(
     return ChannelScore(
         score=max(regularity, replay),
         confidence=_saturating(len(timing.down_down), AUTOMATION_FULL_INTERVALS),
+    )
+
+
+# Per-user quantiles settle at roughly this many transfers.
+TRANSACTION_FULL_HISTORY = 20
+
+
+def transaction_channel(transfer: Transfer, aggregates: UserAggregates | None) -> ChannelScore:
+    """Amount, hour and velocity against the user's own history.
+
+    Only excess counts. A smaller transfer than usual, or fewer of them, is not evidence of
+    innocence worth subtracting. ``aggregates`` is ``None`` for a user the aggregator has not yet
+    covered, which is no evidence.
+    """
+    if aggregates is None:
+        return NO_EVIDENCE
+    values = transaction_features(transfer, aggregates)
+    score = (
+        max(0.0, values["amount_z"]) + values["hour_rarity"] + max(0.0, values["velocity"] - 1.0)
+    )
+    return ChannelScore(
+        score=score,
+        confidence=_saturating(aggregates.history_count, TRANSACTION_FULL_HISTORY),
+    )
+
+
+# Same cold-start horizon as the identity channel.
+CONTEXT_FULL_SESSIONS = IDENTITY_FULL_SESSIONS
+
+
+def context_channel(context: SessionContext) -> ChannelScore:
+    """Device familiarity and recent credential or contact changes.
+
+    The facts are exact, but they are only evidence against a history: on an account with no prior
+    sessions every device is new. Confidence therefore rests on the account's session count.
+    """
+    return ChannelScore(
+        score=sum(context_features(context).values()),
+        confidence=_saturating(context.account_sessions, CONTEXT_FULL_SESSIONS),
+    )
+
+
+# The aggregator runs nightly. A week without a successful run leaves nothing worth trusting.
+PAYEE_RISK_STALE_HOURS = 168.0
+
+
+def payee_channel(edge: PayeeEdge | None, risk: PayeeRisk | None) -> ChannelScore:
+    """Payee novelty and verification for this user, plus cross-user destination risk.
+
+    The edge facts are read live and always current; the global risk is computed in batch and ages.
+    Half the confidence rests on each, and the global half decays to nothing over a week, so a
+    failing aggregator shrinks the channel instead of freezing a stale verdict into it
+    (architecture section 14).
+    """
+    freshness = (
+        0.0
+        if risk is None
+        else _saturating(PAYEE_RISK_STALE_HOURS - risk.hours_since_computed, PAYEE_RISK_STALE_HOURS)
+    )
+    return ChannelScore(
+        score=sum(payee_features(edge, risk).values()),
+        confidence=0.5 + 0.5 * freshness,
     )

@@ -12,7 +12,16 @@ from __future__ import annotations
 import pytest
 
 from fraudcore import scoring
-from fraudcore.features import KeystrokeTiming, timing_shingles
+from fraudcore.features import (
+    DeviceRecord,
+    KeystrokeTiming,
+    PayeeEdge,
+    PayeeRisk,
+    SessionContext,
+    Transfer,
+    UserAggregates,
+    timing_shingles,
+)
 from fraudcore.scoring import (
     DISPERSION_FLOOR,
     NO_EVIDENCE,
@@ -249,3 +258,63 @@ class TestAutomationChannel:
         assert scoring.automation_channel(_timing((0.12,) * full)).confidence == 1.0
         short = scoring.automation_channel(_timing((0.12,) * 3))
         assert short.confidence == pytest.approx(3 / full)
+
+
+class TestTransactionChannel:
+    HISTOGRAM = tuple(9.0 if hour == 14 else (1.0 if hour == 2 else 0.0) for hour in range(24))
+    AGGREGATES = UserAggregates(400.0, 1400.0, 4.0, HISTOGRAM, history_count=50)
+
+    def test_score_sums_the_excess_components(self) -> None:
+        # amount_z 0.5 + hour_rarity 0.8 + velocity excess (1.5 - 1) 0.5
+        result = scoring.transaction_channel(Transfer(900.0, 2, 6), self.AGGREGATES)
+        assert result.score == pytest.approx(1.8)
+        assert result.confidence == 1.0
+
+    def test_below_typical_amount_and_velocity_subtract_nothing(self) -> None:
+        result = scoring.transaction_channel(Transfer(10.0, 14, 1), self.AGGREGATES)
+        assert result.score == 0.0
+
+    def test_velocity_exactly_at_the_users_p95_adds_nothing(self) -> None:
+        result = scoring.transaction_channel(Transfer(400.0, 14, 4), self.AGGREGATES)
+        assert result.score == 0.0
+
+    def test_no_aggregates_is_no_evidence(self) -> None:
+        assert scoring.transaction_channel(Transfer(900.0, 2, 6), None) == NO_EVIDENCE
+
+    def test_confidence_rests_on_history_length(self) -> None:
+        young = UserAggregates(400.0, 1400.0, 4.0, self.HISTOGRAM, history_count=10)
+        assert scoring.transaction_channel(Transfer(900.0, 2, 6), young).confidence == 0.5
+
+
+class TestContextChannel:
+    def test_score_and_confidence_match_hand_calculation(self) -> None:
+        # novelty 1.0 + credential 0.75, over 2 of 5 cold-start sessions
+        context = SessionContext(None, 1.75, None, account_sessions=2)
+        result = scoring.context_channel(context)
+        assert result.score == pytest.approx(1.75)
+        assert result.confidence == pytest.approx(0.4)
+
+    def test_a_familiar_stable_device_scores_zero(self) -> None:
+        context = SessionContext(DeviceRecord(30), None, None, account_sessions=40)
+        assert scoring.context_channel(context) == ChannelScore(0.0, 1.0)
+
+    def test_a_brand_new_account_has_no_context_evidence(self) -> None:
+        context = SessionContext(None, None, None, account_sessions=0)
+        assert scoring.context_channel(context).confidence == 0.0
+
+
+class TestPayeeChannel:
+    def test_score_and_confidence_match_hand_calculation(self) -> None:
+        # score 0.8 + 1.0 + 0.4; freshness 1 - 42 / 168 = 0.75, confidence 0.5 + 0.375
+        edge = PayeeEdge(days_since_first_seen=6.0, verified=False)
+        risk = PayeeRisk(risk_score=0.4, hours_since_computed=42.0)
+        result = scoring.payee_channel(edge, risk)
+        assert result.score == pytest.approx(2.2)
+        assert result.confidence == pytest.approx(0.875)
+
+    def test_missing_global_risk_halves_confidence(self) -> None:
+        assert scoring.payee_channel(None, None) == ChannelScore(2.0, 0.5)
+
+    def test_risk_exactly_at_the_staleness_limit_adds_no_confidence(self) -> None:
+        risk = PayeeRisk(risk_score=0.4, hours_since_computed=scoring.PAYEE_RISK_STALE_HOURS)
+        assert scoring.payee_channel(None, risk).confidence == 0.5

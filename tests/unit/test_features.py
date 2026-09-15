@@ -188,6 +188,125 @@ def test_vector_orders_by_the_requested_names(extracted: dict[str, float]) -> No
     assert features.vector(extracted, ["paste_count", "mean_hold"]) == pytest.approx([1.0, 0.2])
 
 
+def _histogram(**bins: float) -> tuple[float, ...]:
+    counts = [0.0] * features.HOURS_PER_DAY
+    for hour, count in bins.items():
+        counts[int(hour.removeprefix("h"))] = count
+    return tuple(counts)
+
+
+# p50 400, p95 1400, busiest hour 14 with 9 transfers, hour 2 used once.
+AGGREGATES = features.UserAggregates(
+    amount_p50=400.0,
+    amount_p95=1400.0,
+    daily_count_p95=4.0,
+    hour_histogram=_histogram(h14=9, h2=1),
+    history_count=50,
+)
+
+
+class TestTransactionFeatures:
+    def test_values_match_hand_calculation(self) -> None:
+        # amount_z    (900 - 400) / 1000     = 0.5
+        # hour_rarity 1 - (1 + 1) / (9 + 1)  = 0.8
+        # velocity    6 / 4                  = 1.5
+        transfer = features.Transfer(amount=900.0, hour=2, transfers_24h=6)
+        assert features.transaction_features(transfer, AGGREGATES) == pytest.approx(
+            {"amount_z": 0.5, "hour_rarity": 0.8, "velocity": 1.5}
+        )
+
+    def test_the_busiest_hour_has_zero_rarity(self) -> None:
+        transfer = features.Transfer(amount=400.0, hour=14, transfers_24h=1)
+        assert features.transaction_features(transfer, AGGREGATES)["hour_rarity"] == 0.0
+
+    def test_an_empty_histogram_has_zero_rarity_everywhere(self) -> None:
+        empty = dataclasses.replace(AGGREGATES, hour_histogram=(0.0,) * 24)
+        transfer = features.Transfer(amount=400.0, hour=3, transfers_24h=1)
+        assert features.transaction_features(transfer, empty)["hour_rarity"] == 0.0
+
+    def test_the_spread_is_floored_when_the_quantiles_coincide(self) -> None:
+        # p50 == p95 == 400: the spread floors to a tenth of the median, 40.
+        flat = dataclasses.replace(AGGREGATES, amount_p95=400.0)
+        transfer = features.Transfer(amount=440.0, hour=14, transfers_24h=1)
+        assert features.transaction_features(transfer, flat)["amount_z"] == pytest.approx(1.0)
+
+    def test_invalid_inputs_are_rejected(self) -> None:
+        with pytest.raises(ValueError, match="24 bins"):
+            dataclasses.replace(AGGREGATES, hour_histogram=(1.0,) * 23)
+        with pytest.raises(ValueError, match="p50 <= p95"):
+            dataclasses.replace(AGGREGATES, amount_p95=100.0)
+        with pytest.raises(ValueError, match="outside 0 to 23"):
+            features.Transfer(amount=1.0, hour=24, transfers_24h=1)
+        with pytest.raises(ValueError, match="positive"):
+            features.Transfer(amount=0.0, hour=1, transfers_24h=1)
+        with pytest.raises(ValueError, match="at least 1"):
+            features.Transfer(amount=1.0, hour=1, transfers_24h=0)
+
+
+class TestContextFeatures:
+    def _context(self, **overrides: object) -> features.SessionContext:
+        base = features.SessionContext(
+            device=features.DeviceRecord(session_count=30),
+            days_since_credential_change=None,
+            days_since_contact_change=None,
+            account_sessions=40,
+        )
+        return dataclasses.replace(base, **overrides)
+
+    def test_values_match_hand_calculation(self) -> None:
+        # new device 1.0; credential changed 1.75 days ago: 1 - 1.75 / 7 = 0.75; contact never.
+        context = self._context(device=None, days_since_credential_change=1.75)
+        assert features.context_features(context) == pytest.approx(
+            {"device_novelty": 1.0, "credential_recency": 0.75, "contact_recency": 0.0}
+        )
+
+    def test_a_device_at_the_enrolment_count_is_familiar(self) -> None:
+        enrolled = features.DeviceRecord(session_count=features.ENROLLED_DEVICE_SESSIONS)
+        younger = features.DeviceRecord(session_count=features.ENROLLED_DEVICE_SESSIONS - 1)
+        assert features.context_features(self._context(device=enrolled))["device_novelty"] == 0.0
+        assert features.context_features(self._context(device=younger))["device_novelty"] == 0.5
+
+    def test_a_change_exactly_at_the_stability_window_no_longer_counts(self) -> None:
+        context = self._context(days_since_contact_change=features.STABILITY_WINDOW_DAYS)
+        assert features.context_features(context)["contact_recency"] == 0.0
+
+    def test_negative_values_are_rejected(self) -> None:
+        with pytest.raises(ValueError, match="days since"):
+            self._context(days_since_credential_change=-1.0)
+        with pytest.raises(ValueError, match="session_count"):
+            features.DeviceRecord(session_count=-1)
+
+
+class TestPayeeFeatures:
+    def test_values_match_hand_calculation(self) -> None:
+        # first used 6 days ago: 1 - 6 / 30 = 0.8; unverified; global risk 0.4
+        edge = features.PayeeEdge(days_since_first_seen=6.0, verified=False)
+        risk = features.PayeeRisk(risk_score=0.4, hours_since_computed=42.0)
+        assert features.payee_features(edge, risk) == pytest.approx(
+            {"payee_novelty": 0.8, "payee_unverified": 1.0, "global_risk": 0.4}
+        )
+
+    def test_a_never_used_payee_is_new_and_unverified(self) -> None:
+        assert features.payee_features(None, None) == {
+            "payee_novelty": 1.0,
+            "payee_unverified": 1.0,
+            "global_risk": 0.0,
+        }
+
+    def test_a_verified_payee_at_the_new_payee_window_is_established(self) -> None:
+        edge = features.PayeeEdge(features.NEW_PAYEE_WINDOW_DAYS, verified=True)
+        assert features.payee_features(edge, None)["payee_novelty"] == 0.0
+        assert features.payee_features(edge, None)["payee_unverified"] == 0.0
+
+    def test_invalid_inputs_are_rejected(self) -> None:
+        with pytest.raises(ValueError, match="outside"):
+            features.PayeeRisk(risk_score=1.01, hours_since_computed=0.0)
+        with pytest.raises(ValueError, match="hours_since_computed"):
+            features.PayeeRisk(risk_score=0.5, hours_since_computed=-1.0)
+        with pytest.raises(ValueError, match="days_since_first_seen"):
+            features.PayeeEdge(days_since_first_seen=-1.0, verified=True)
+
+
 class TestDeviceClass:
     def test_no_touch_and_fine_pointer_is_desktop(self) -> None:
         assert features.device_class(0, False, 1080) == "desktop"
