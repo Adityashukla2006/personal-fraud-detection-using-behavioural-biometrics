@@ -124,6 +124,8 @@ class TestLeastPrivilege:
             ("aggregator", "dynamodb:PutItem", "USER#u1", "implicitDeny"),
             ("scoring", "dynamodb:BatchGetItem", "AGG#u1", "allowed"),
             ("scoring", "dynamodb:PutItem", "AGG#u1", "implicitDeny"),
+            ("scoring", "dynamodb:PutItem", "REPLAY#u1", "allowed"),
+            ("aggregator", "dynamodb:PutItem", "REPLAY#u1", "implicitDeny"),
         ],
     )
     def test_each_role_reaches_only_its_own_prefixes(
