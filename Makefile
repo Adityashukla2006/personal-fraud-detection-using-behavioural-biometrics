@@ -17,7 +17,7 @@ export TERRAFORM
 
 DEV := infra/envs/dev
 
-.PHONY: help install dataset test test-integration lint format baseline clean \
+.PHONY: help install dataset test test-integration lint format baseline clean build latency \
 	bootstrap infra-init infra-validate plan apply
 
 help:
@@ -29,6 +29,8 @@ help:
 	@echo "format            ruff format and import sort"
 	@echo "baseline          reproduce the published EER baseline"
 	@echo "clean             remove bytecode and pytest caches"
+	@echo "build             stage Lambda packages under build/lambdas for terraform"
+	@echo "latency           measure warm scoring latency against the dev stack"
 	@echo "bootstrap         one-time: create the terraform state bucket"
 	@echo "infra-init        terraform init for envs/dev"
 	@echo "infra-validate    terraform fmt check and validate"
@@ -57,6 +59,12 @@ format:
 baseline:
 	$(PYTHON) -m research.baseline_eer
 
+build:
+	$(PYTHON) src/lambdas/stage_functions.py
+
+latency:
+	$(PYTHON) simulator/measure_latency.py
+
 clean:
 	$(PYTHON) -c "import pathlib, shutil; [shutil.rmtree(p) for p in pathlib.Path('.').rglob('__pycache__')]"
 	$(PYTHON) -c "import pathlib, shutil; [shutil.rmtree(p) for p in pathlib.Path('.').rglob('.pytest_cache')]"
@@ -72,8 +80,8 @@ infra-validate:
 	terraform fmt -check -recursive infra
 	terraform -chdir=$(DEV) validate
 
-plan:
-	terraform -chdir=$(DEV) plan
+plan: build
+	$(TERRAFORM) -chdir=$(DEV) plan
 
-apply:
-	terraform -chdir=$(DEV) apply
+apply: build
+	$(TERRAFORM) -chdir=$(DEV) apply
