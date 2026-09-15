@@ -92,6 +92,27 @@ def test_the_seeded_baseline_is_what_the_live_system_reads() -> None:
     assert ("AGG#uid-1", "WINDOW#30d") in by_key
     assert by_key[("USER#uid-1", "DEV#sim-home-s002")]["session_count"] == 30
 
+    # The replay history holds day 1, grouped as live sessions, rounded as the payload rounds it,
+    # so a replay of any day-1 field is in it.
+    history = by_key[("REPLAY#uid-1", "HISTORY")]
+    assert len(history["sessions"]) == 13
+    reps = _reps("s002")
+    from fraudcore.features import timing_shingles
+
+    remembered = {int(s) for session in history["sessions"] for s in session}
+    assert timing_shingles(run_attacks.cmu_field(reps[0])) <= remembered
+
+
+def test_the_trace_start_is_read_from_the_named_function() -> None:
+    document = {
+        "Segments": [
+            _segment("bfd-archive", "AWS::Lambda::Function", 5.0, 5.1),
+            _segment("bfd-scoring", "AWS::Lambda", 7.25, 7.5),
+        ]
+    }
+    assert measure_latency.trace_start(document, "bfd-scoring") == 7.25
+    assert measure_latency.trace_start(document, "bfd-missing") is None
+
 
 def _segment(
     name: str, origin: str, start: float, end: float, subsegments: list | None = None

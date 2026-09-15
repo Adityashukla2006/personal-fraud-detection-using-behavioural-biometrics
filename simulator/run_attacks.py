@@ -4,10 +4,11 @@ The attack classes are frozen in ``simulator/attacks.py``. This script only send
 
 Users. The first N CMU subjects become throwaway Cognito users; each is attacked by the next subject
 in order. Each gets a seeded baseline: a desktop profile bootstrapped with fraudcore from pooled
-day-1 typing, an enrolled device, account history, 30-day transaction aggregates and one verified
-payee. That stands in for what adaptation and the aggregator would learn over months of ordinary
-use, which neither can produce for a synthetic user. It is written out of band with admin
-credentials, as the integration tests seed theirs, so the deployed permissions are untouched.
+day-1 typing, an enrolled device, account history, 30-day transaction aggregates, one verified
+payee, and a replay history holding the day-1 typing as sessions the system has already seen. That
+stands in for what adaptation, the aggregator and ordinary use would build up over months, which
+none of them can produce for a synthetic user. It is written out of band with admin credentials,
+as the integration tests seed theirs, so the deployed permissions are untouched.
 
 Sessions. Every session runs login, payee, amount and confirmation against the real API. A
 confirmation decision of step-up or stronger counts as detected. Poisoning is also judged on its
@@ -56,7 +57,7 @@ from fraudcore.adaptation import (  # noqa: E402
     BufferedSession,
     rebuild,
 )
-from fraudcore.features import KeystrokeTiming, vector  # noqa: E402
+from fraudcore.features import KeystrokeTiming, timing_shingles, vector  # noqa: E402
 from fraudcore.session import pooled_extract  # noqa: E402
 from simulator import attacks, cmu  # noqa: E402
 from simulator.stack import RESULTS, Users, outputs, post  # noqa: E402
@@ -71,24 +72,28 @@ SESSION_COLUMNS = [
     "confidence", "top_channel", "constraints", "transfer_status", "round_trip_ms",
     *[f"{stage}_ms" for stage in STAGES],
 ]
+PARTITIONS = ("USER#", "AGG#", "LEDGER#", "REPLAY#")
 
 
 def _decimal(value: float) -> Decimal:
     return Decimal(repr(round(float(value), 9)))
 
 
-def enrolment_sessions(reps: Sequence[cmu.Repetition]) -> list[tuple[float, ...]]:
-    """Day-1 typing, pooled four fields at a time: the same pooling a live session gets."""
+def _timing(repetition: cmu.Repetition) -> KeystrokeTiming:
+    return KeystrokeTiming(repetition.hold, repetition.down_down, repetition.up_down)
+
+
+def enrolment_groups(reps: Sequence[cmu.Repetition]) -> list[list[cmu.Repetition]]:
+    """Day-1 typing in groups of four fields: the same pooling a live session gets."""
     enrolment = [r for r in reps if r.session == attacks.ENROLMENT_SESSION]
-    groups = [enrolment[i : i + POOL] for i in range(0, len(enrolment) - POOL + 1, POOL)]
+    return [enrolment[i : i + POOL] for i in range(0, len(enrolment), POOL)]
+
+
+def enrolment_sessions(reps: Sequence[cmu.Repetition]) -> list[tuple[float, ...]]:
     return [
-        tuple(
-            vector(
-                pooled_extract([KeystrokeTiming(r.hold, r.down_down, r.up_down) for r in group]),
-                PROFILE_FEATURES,
-            )
-        )
-        for group in groups
+        tuple(vector(pooled_extract([_timing(r) for r in group]), PROFILE_FEATURES))
+        for group in enrolment_groups(reps)
+        if len(group) == POOL
     ]
 
 
@@ -104,6 +109,10 @@ def baseline_items(
     profile = rebuild(None, buffer, 1.0, now, policy).profile
     if profile is None:
         raise ValueError(f"{victim} has too little day-1 typing to bootstrap a profile")
+    replay_sessions = [
+        sorted(frozenset().union(*(timing_shingles(cmu_field(r)) for r in group)))
+        for group in enrolment_groups(reps)
+    ]
     user = f"USER#{uid}"
     return [
         {
@@ -144,7 +153,20 @@ def baseline_items(
             "verified_at": int(now) - 190 * DAY,
             "txn_count": 12,
         },
+        {
+            "PK": f"REPLAY#{uid}",
+            "SK": "HISTORY",
+            "sessions": replay_sessions,
+            "version": 1,
+            "updated_at": int(now),
+        },
     ]
+
+
+def cmu_field(repetition: cmu.Repetition) -> KeystrokeTiming:
+    """The field exactly as the live payload rounds it, so seeded shingles match replays."""
+    entry = cmu.field(repetition)
+    return KeystrokeTiming(tuple(entry["hold"]), tuple(entry["down_down"]), tuple(entry["up_down"]))
 
 
 def run_session(
@@ -253,7 +275,7 @@ def cleanup(
         for session_id in {row["session_id"] for row in rows}:
             batch.delete_item(Key={"PK": f"SESS#{session_id}", "SK": "META"})
     for account in accounts.values():
-        for prefix in ("USER#", "AGG#", "LEDGER#"):
+        for prefix in PARTITIONS:
             _delete_partition(table, f"{prefix}{account['sub']}")
 
 

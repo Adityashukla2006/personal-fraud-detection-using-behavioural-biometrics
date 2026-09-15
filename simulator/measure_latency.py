@@ -14,15 +14,18 @@ function's init, which X-Ray reports separately.
 One X-Ray trace covers the whole request, including the ledger, archive and workflow it fans out
 to, so only segments named for the scoring function are read.
 
-Warm requests follow a warm-up. Cold starts are forced: changing the function's description makes
-Lambda retire its execution environments, so the next request starts a fresh one. The description
-is restored at the end.
+Warm requests follow a warm-up, at the deployed memory size. Cold starts are forced: changing the
+function's description makes Lambda retire its execution environments, so the next request starts
+a fresh one. They are measured at each memory size in ``--cold-memory``, because Lambda allocates
+CPU in proportion to memory and init is CPU-bound; each condition is labelled ``cold_<MB>mb``. The
+description and memory size are restored at the end.
 
 Writes research/results/tables/phase8_latency.csv and cleans up its user and every item it created.
 
 Usage, from the repository root::
 
     python simulator/measure_latency.py [--warm 100] [--confirmations 30] [--cold 10]
+                                        [--cold-memory 512 1024]
 """
 
 from __future__ import annotations
@@ -79,6 +82,16 @@ def lambda_breakdown(document: dict[str, Any], function: str) -> dict[str, float
     return breakdown
 
 
+def trace_start(document: dict[str, Any], function: str) -> float | None:
+    """When ``function``'s earliest segment in the trace started, as an epoch second."""
+    starts = [
+        body["start_time"]
+        for body in (json.loads(segment["Document"]) for segment in document.get("Segments", []))
+        if body.get("name") == function and "start_time" in body
+    ]
+    return min(starts) if starts else None
+
+
 def summarise(samples: dict[tuple[str, str], list[float]]) -> list[dict[str, Any]]:
     rows = []
     for (condition, measure), values in sorted(samples.items()):
@@ -131,6 +144,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--warm", type=int, default=100)
     parser.add_argument("--confirmations", type=int, default=30)
     parser.add_argument("--cold", type=int, default=10)
+    parser.add_argument("--cold-memory", type=int, nargs="*", default=[512, 1024])
     args = parser.parse_args(argv)
 
     import boto3
@@ -143,16 +157,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     function = out["scoring_function_name"]
     url = f"{out['api_url']}/score"
     _, reps = next(iter(cmu.load().items()))
-    human = [cmu.field(rep) for rep in reps[: args.warm + args.confirmations + args.cold + WARMUP]]
+    human = [cmu.field(rep) for rep in reps]
     known = {"payee_id": attacks.payee_id("latency-probe"), "amount": 25.0}
 
     users = Users(aws, out)
     samples: dict[tuple[str, str], list[float]] = defaultdict(list)
+    windows: list[tuple[str, datetime, datetime]] = []
     created: list[tuple[str, str]] = []
     account: dict[str, str] = {}
-    original = lambda_client.get_function_configuration(FunctionName=function).get(
-        "Description", ""
-    )
+    configuration = lambda_client.get_function_configuration(FunctionName=function)
+    original_description = configuration.get("Description", "")
+    original_memory = configuration["MemorySize"]
+
+    def settle() -> None:
+        lambda_client.get_waiter("function_updated_v2").wait(FunctionName=function)
 
     def call(checkpoint: str, index: int) -> Any:
         session = f"sim-{secrets.token_hex(16)}"
@@ -177,49 +195,73 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         account.update(users.create("sim-latency"))
-        warm_start = datetime.now(UTC)
+        began = datetime.now(UTC)
         for index in range(WARMUP):
             call("login", index)
         for index in range(args.warm):
             record(samples, "warm", call("login", index))
         for index in range(args.confirmations):
             record(samples, "warm_confirmation", call("confirmation", index))
-        warm_end = datetime.now(UTC)
+        windows.append(("warm", began, datetime.now(UTC)))
 
-        cold_start = datetime.now(UTC)
-        for index in range(args.cold):
-            lambda_client.update_function_configuration(
-                FunctionName=function, Description=f"cold start probe {index} {time.time():.0f}"
-            )
-            lambda_client.get_waiter("function_updated_v2").wait(FunctionName=function)
-            record(samples, "cold", call("login", index))
-        cold_end = datetime.now(UTC)
+        for memory in args.cold_memory:
+            lambda_client.update_function_configuration(FunctionName=function, MemorySize=memory)
+            settle()
+            condition = f"cold_{memory}mb"
+            began = datetime.now(UTC)
+            for index in range(args.cold):
+                lambda_client.update_function_configuration(
+                    FunctionName=function,
+                    Description=f"cold start probe {memory}mb {index} {time.time():.0f}",
+                )
+                settle()
+                record(samples, condition, call("login", index))
+            windows.append((condition, began, datetime.now(UTC)))
     finally:
-        lambda_client.update_function_configuration(FunctionName=function, Description=original)
+        lambda_client.update_function_configuration(
+            FunctionName=function, Description=original_description, MemorySize=original_memory
+        )
+        settle()
         users.close()
         with table.batch_writer() as batch:
             for partition, sort in created:
                 batch.delete_item(Key={"PK": partition, "SK": sort})
         if account:
-            for prefix in ("USER#", "LEDGER#"):
-                condition = Key("PK").eq(f"{prefix}{account['sub']}")
-                for item in table.query(KeyConditionExpression=condition)["Items"]:
+            for prefix in ("USER#", "LEDGER#", "REPLAY#"):
+                condition_key = Key("PK").eq(f"{prefix}{account['sub']}")
+                for item in table.query(KeyConditionExpression=condition_key)["Items"]:
                     table.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
 
     # X-Ray indexes traces a little after the requests; wait until the count stops growing.
     margin = timedelta(seconds=5)
+    first, last = windows[0][1], windows[-1][2]
     deadline = time.monotonic() + TRACE_WAIT_SECONDS
     documents: list[dict[str, Any]] = []
     while time.monotonic() < deadline:
         time.sleep(15)
-        latest = traces(aws, function, warm_start - margin, cold_end + margin)
+        latest = traces(aws, function, first - margin, last + margin)
         if documents and len(latest) == len(documents):
             break
         documents = latest
 
     for document in documents:
         breakdown = lambda_breakdown(document, function)
-        condition = "cold" if "init" in breakdown else "warm"
+        started = trace_start(document, function)
+        if started is None or not breakdown:
+            continue
+        condition = next(
+            (
+                name
+                for name, low, high in windows
+                if low.timestamp() - 5 <= started <= high.timestamp() + 5
+            ),
+            None,
+        )
+        if condition is None:
+            continue
+        # Inside a cold window only the probe requests are cold; anything without init is not.
+        if condition.startswith("cold") and "init" not in breakdown:
+            continue
         for name, value in breakdown.items():
             samples[(condition, f"lambda_{name}")].append(value)
 
@@ -231,10 +273,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         writer.writeheader()
         writer.writerows(rows)
     print(path.read_text(encoding="utf-8"))
-    print(
-        f"windows: warm {warm_start:%H:%M:%S}-{warm_end:%H:%M:%S}, "
-        f"cold {cold_start:%H:%M:%S}-{cold_end:%H:%M:%S}; {len(documents)} X-Ray traces"
-    )
+    print(f"{len(documents)} X-Ray traces; windows: " + ", ".join(
+        f"{name} {low:%H:%M:%S}-{high:%H:%M:%S}" for name, low, high in windows
+    ))
     return 0
 
 
