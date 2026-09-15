@@ -33,6 +33,7 @@ from fraudcore.scoring import ReferenceProfile
 MODEL = FusionModel.from_dict(
     {
         "intercept": -3.0,
+        "z_limit": 6.0,
         "channels": {
             "behaviour": {"weight": 1.0, "mean": 12.0, "scale": 6.0, "alert_z": 2.0},
             "automation": {"weight": 1.5, "mean": 0.1, "scale": 0.2, "alert_z": 2.0},
@@ -198,6 +199,10 @@ def test_fixture_decision(
         assert decision.action == expected
     if constraints is not None:
         assert decision.constraints == constraints
+    # Bounded representation: no single contribution exceeds weight * z_limit.
+    for contribution in decision.contributions:
+        limit = MODEL.channels[contribution.channel].weight * MODEL.z_limit
+        assert abs(contribution.value) <= limit + 1e-9
 
 
 def test_a_new_account_is_never_restricted_or_blocked() -> None:

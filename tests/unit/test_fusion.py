@@ -17,6 +17,7 @@ from fraudcore.scoring import CHANNELS, NO_EVIDENCE, ChannelScore
 
 SPEC: dict[str, Any] = {
     "intercept": -2.0,
+    "z_limit": 6.0,
     "channels": {
         "behaviour": {"weight": 2.0, "mean": 10.0, "scale": 10.0, "alert_z": 2.0},
         "automation": {"weight": 1.0, "mean": 0.0, "scale": 1.0, "alert_z": 2.0},
@@ -95,6 +96,45 @@ class TestConfidenceShrinkage:
     def test_an_unknown_channel_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="unknown channels"):
             fusion.fuse(MODEL, {"scam_intent": ChannelScore(1.0, 1.0)})
+
+
+class TestBoundedRepresentation:
+    def test_an_extreme_score_is_clipped_at_the_limit(self) -> None:
+        # behaviour standardises to (1e6 - 10) / 10, far beyond 6; at confidence 0.5, z = 3.0
+        fused = fusion.fuse(MODEL, {"behaviour": ChannelScore(1e6, 0.5)})
+        assert fused.z["behaviour"] == pytest.approx(3.0)
+        assert fused.top(1)[0].value == pytest.approx(6.0)
+
+    def test_a_score_exactly_at_the_limit_is_unchanged(self) -> None:
+        # (70 - 10) / 10 = 6.0 exactly
+        assert fusion.fuse(MODEL, {"behaviour": ChannelScore(70.0, 1.0)}).z[
+            "behaviour"
+        ] == pytest.approx(6.0)
+
+    def test_the_clip_is_symmetric(self) -> None:
+        fused = fusion.fuse(MODEL, {"payee": ChannelScore(-1e6, 1.0)})
+        assert fused.z["payee"] == pytest.approx(-6.0)
+
+    def test_the_observation_itself_is_not_modified(self) -> None:
+        score = ChannelScore(1e6, 1.0)
+        fusion.fuse(MODEL, {"behaviour": score})
+        assert score.score == 1e6
+
+    def test_attribution_stays_exact_when_clipped(self) -> None:
+        fused = fusion.fuse(MODEL, {"behaviour": ChannelScore(1e6, 1.0), **SCORES})
+        total = MODEL.intercept + sum(c.value for c in fused.contributions)
+        assert total == pytest.approx(fused.logit, abs=1e-12)
+
+    def test_an_alert_threshold_above_the_limit_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="alert_z exceeds z_limit"):
+            FusionModel.from_dict({**SPEC, "z_limit": 1.9})
+
+    def test_an_alert_threshold_exactly_at_the_limit_is_allowed(self) -> None:
+        FusionModel.from_dict({**SPEC, "z_limit": 2.0})
+
+    def test_a_non_positive_limit_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="z_limit"):
+            FusionModel.from_dict({**SPEC, "z_limit": 0.0})
 
 
 class TestNumericalStability:

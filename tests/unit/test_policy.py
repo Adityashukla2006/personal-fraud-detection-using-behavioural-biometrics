@@ -16,6 +16,7 @@ from fraudcore.scoring import CHANNELS
 MODEL = FusionModel.from_dict(
     {
         "intercept": 0.0,
+        "z_limit": 10.0,
         "channels": {
             name: {"weight": 1.0, "mean": 0.0, "scale": 1.0, "alert_z": 2.0} for name in CHANNELS
         },

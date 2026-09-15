@@ -2,9 +2,20 @@
 
 Architecture section 8.1, implemented as written:
 
-    z_i  = c_i * standardise(s_i)      # a channel with no evidence has c_i = 0, so z_i = 0
+    z_i  = c_i * clip(standardise(s_i), -z_limit, z_limit)
     L    = w_0 + sum_i w_i * z_i
     risk = 100 * sigmoid(L)
+
+Bounded representation
+----------------------
+Channel scores are observations and are kept exactly as measured. What is bounded is only their
+standardised form inside fusion. A scaled Manhattan distance is unbounded by design -- a feature
+whose enrolment dispersion sits at the floor turns a tiny deviation into thousands of units -- and
+an unbounded z lets one channel own the logit and the explanation ("behaviour +3432") long after the
+sigmoid has saturated. Clipping at ``z_limit`` standard units keeps ordering and exact attribution
+below the limit, changes nothing about which channels cross ``alert_z``, and makes every
+contribution a comparable number. The clip is applied before confidence shrinkage, so a
+low-confidence channel is still shrunk in proportion.
 
 Why a linear model
 ------------------
@@ -72,17 +83,30 @@ class ChannelModel:
 @dataclass(frozen=True)
 class FusionModel:
     intercept: float
+    z_limit: float
     channels: Mapping[str, ChannelModel]
 
     def __post_init__(self) -> None:
         if set(self.channels) != set(CHANNELS):
             raise ValueError(f"fusion model must define exactly the channels {CHANNELS}")
+        if not (math.isfinite(self.z_limit) and self.z_limit > 0):
+            raise ValueError("z_limit must be positive and finite")
+        # A channel whose alert threshold sits above the clip could never alert.
+        unreachable = sorted(n for n, c in self.channels.items() if c.alert_z > self.z_limit)
+        if unreachable:
+            raise ValueError(f"alert_z exceeds z_limit for {unreachable}")
         object.__setattr__(self, "channels", MappingProxyType(dict(self.channels)))
+
+    def representation(self, name: str, score: ChannelScore) -> float:
+        """The confidence-shrunk, bounded standardised score fusion uses for one channel."""
+        standardised = self.channels[name].standardise(score.score)
+        return score.confidence * min(self.z_limit, max(-self.z_limit, standardised))
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> FusionModel:
         return cls(
             intercept=float(data["intercept"]),
+            z_limit=float(data["z_limit"]),
             channels={
                 name: ChannelModel(
                     weight=float(spec["weight"]),
@@ -141,10 +165,8 @@ def fuse(model: FusionModel, scores: Mapping[str, ChannelScore]) -> Fusion:
     z: dict[str, float] = {}
     contributions: list[Contribution] = []
     for name in CHANNELS:
-        channel = model.channels[name]
-        score = scores.get(name, NO_EVIDENCE)
-        z[name] = score.confidence * channel.standardise(score.score)
-        contributions.append(Contribution(name, channel.weight * z[name]))
+        z[name] = model.representation(name, scores.get(name, NO_EVIDENCE))
+        contributions.append(Contribution(name, model.channels[name].weight * z[name]))
 
     logit = model.intercept + sum(contribution.value for contribution in contributions)
 
