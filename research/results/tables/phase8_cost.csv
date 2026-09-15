@@ -1,0 +1,13 @@
+component,usage,unit,unit_price_usd,cost_usd,per_1000_sessions_usd
+lambda_requests,2650.0,request,2.0000000000000002e-07,0.00053,0.00212
+lambda_gb_seconds,32.2761,GB-second (arm64),1.33334e-05,0.00043035,0.001721
+api_requests,1000.0,HTTP API request,1e-06,0.001,0.004
+state_transitions,1100.0,Standard state transition,2.5e-05,0.0275,0.11
+dynamodb_write_units,4702.0,on-demand write request unit,7.115e-07,0.00334547,0.013382
+dynamodb_read_units,6039.0,on-demand read request unit,1.423e-07,0.00085935,0.003437
+events_published,1150.0,custom event,1e-06,0.00115,0.0046
+s3_puts,1150.0,PUT request,5e-06,0.00575,0.023
+sns_publishes,50.0,publish,5e-07,2.5e-05,0.0001
+log_gigabytes,0.0014,GB ingested,0.67,0.00090493,0.00362
+xray_traces,2650.0,trace recorded,5e-06,0.01325,0.053
+total,250,sessions,,0.0547451,0.21898

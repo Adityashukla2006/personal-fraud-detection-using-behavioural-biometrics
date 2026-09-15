@@ -1,0 +1,6 @@
+attack,sessions,detection_rate,allow_rate,monitor_rate,step_up_rate,restrict_rate,block_rate,mean_risk,fail_open
+genuine,50,0.22,0.64,0.14,0.22,0.0,0.0,20.69,0
+takeover,50,1.0,0.0,0.0,0.0,0.28,0.72,99.11,0
+bot,50,1.0,0.0,0.0,1.0,0.0,0.0,99.98,0
+replay,50,0.12,0.84,0.04,0.12,0.0,0.0,10.12,0
+poisoning,50,0.38,0.48,0.14,0.38,0.0,0.0,33.29,0

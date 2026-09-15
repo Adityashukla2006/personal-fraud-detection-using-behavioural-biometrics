@@ -1,0 +1,11 @@
+{
+  "started": "2026-09-15T13:53:56.485132+00:00",
+  "finished": "2026-09-15T13:56:47.309628+00:00",
+  "users": 10,
+  "sessions_per_class": 5,
+  "sessions": 250,
+  "api_calls": 1000,
+  "confirmations": 250,
+  "profiles_changed": 0,
+  "seed": 20260915
+}
