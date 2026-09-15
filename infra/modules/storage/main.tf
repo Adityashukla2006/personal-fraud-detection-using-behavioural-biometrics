@@ -28,6 +28,8 @@ locals {
     mjs  = "text/javascript; charset=utf-8"
     css  = "text/css; charset=utf-8"
     svg  = "image/svg+xml"
+    png  = "image/png"
+    csv  = "text/csv; charset=utf-8"
   }
 
   # config.mjs is generated below from live outputs; a local copy is never uploaded over it.

@@ -7,6 +7,11 @@ variable "client_dir" {
   type        = string
 }
 
+variable "research_dir" {
+  description = "research/results, whose figures and tables are published for the console."
+  type        = string
+}
+
 variable "client_config" {
   description = "Public runtime settings written to config.mjs: region, pool, client and API URL."
   type        = map(string)
