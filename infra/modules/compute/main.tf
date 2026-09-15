@@ -20,9 +20,10 @@ locals {
       read  = ["USER#*", "PAYEE#*", "AGG#*", "SESS#*"]
       write = ["SESS#*", "DEC#*"]
     }
-    # The only writer of profile, buffer and verification items.
+    # The only writer of profile, buffer, device and verification items. Reads the verified
+    # decision and its session's keystroke fields, never writes them.
     adaptation = {
-      read  = ["USER#*"]
+      read  = ["USER#*", "DEC#*", "SESS#*"]
       write = ["USER#*"]
     }
     # Writes AGG#<uid> / WINDOW#<window> and PAYEE#<pid> / RISK. Aggregates have their own
