@@ -73,6 +73,12 @@ data "aws_iam_policy_document" "workflow" {
   }
 
   statement {
+    sid       = "PublishOutcomeEvents"
+    actions   = ["events:PutEvents"]
+    resources = [var.event_bus_arn]
+  }
+
+  statement {
     sid = "PublishTraces"
     actions = [
       "xray:PutTraceSegments",
@@ -98,6 +104,7 @@ resource "aws_sfn_state_machine" "transfer" {
   definition = templatefile("${path.module}/transfer.asl.json.tftpl", {
     ledger_arn   = var.ledger_function_arn
     topic_arn    = var.alerts_topic_arn
+    bus_name     = var.event_bus_name
     lambda_retry = local.lambda_retry
   })
 

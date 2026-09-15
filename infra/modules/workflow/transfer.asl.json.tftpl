@@ -42,6 +42,31 @@
       "Catch": [
         { "ErrorEquals": ["States.Timeout"], "ResultPath": "$.error", "Next": "CancelTimedOut" }
       ],
+      "Next": "PublishStepUpVerified"
+    },
+    "PublishStepUpVerified": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Parameters": {
+        "Entries": [
+          {
+            "EventBusName": "${bus_name}",
+            "Source": "bfd.workflow",
+            "DetailType": "stepup.verified",
+            "Detail": {
+              "schema": 1,
+              "transfer_id.$": "$.transfer_id",
+              "decision_id.$": "$.decision_id",
+              "uid.$": "$.uid",
+              "verification.$": "$.verification"
+            }
+          }
+        ]
+      },
+      "ResultPath": null,
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.publish_error", "Next": "Release" }
+      ],
       "Next": "Release"
     },
     "NotifyRestricted": {
@@ -99,10 +124,10 @@
         "FunctionName": "${ledger_arn}",
         "Payload": { "op": "release", "transfer.$": "$" }
       },
-      "ResultSelector": { "status.$": "$.Payload.status" },
+      "ResultSelector": { "status.$": "$.Payload.status", "reason": "none" },
       "ResultPath": "$.ledger",
       "Retry": ${lambda_retry},
-      "Next": "Done"
+      "Next": "PublishOutcome"
     },
     "CancelTimedOut": {
       "Type": "Task",
@@ -111,10 +136,10 @@
         "FunctionName": "${ledger_arn}",
         "Payload": { "op": "cancel", "reason": "timeout", "transfer.$": "$" }
       },
-      "ResultSelector": { "status.$": "$.Payload.status" },
+      "ResultSelector": { "status.$": "$.Payload.status", "reason": "timeout" },
       "ResultPath": "$.ledger",
       "Retry": ${lambda_retry},
-      "Next": "Done"
+      "Next": "PublishOutcome"
     },
     "CancelBlocked": {
       "Type": "Task",
@@ -123,10 +148,10 @@
         "FunctionName": "${ledger_arn}",
         "Payload": { "op": "cancel", "reason": "blocked", "transfer.$": "$" }
       },
-      "ResultSelector": { "status.$": "$.Payload.status" },
+      "ResultSelector": { "status.$": "$.Payload.status", "reason": "blocked" },
       "ResultPath": "$.ledger",
       "Retry": ${lambda_retry},
-      "Next": "Done"
+      "Next": "PublishOutcome"
     },
     "CancelUnrecognised": {
       "Type": "Task",
@@ -135,9 +160,39 @@
         "FunctionName": "${ledger_arn}",
         "Payload": { "op": "cancel", "reason": "unrecognised_response", "transfer.$": "$" }
       },
-      "ResultSelector": { "status.$": "$.Payload.status" },
+      "ResultSelector": { "status.$": "$.Payload.status", "reason": "unrecognised_response" },
       "ResultPath": "$.ledger",
       "Retry": ${lambda_retry},
+      "Next": "PublishOutcome"
+    },
+    "PublishOutcome": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Parameters": {
+        "Entries": [
+          {
+            "EventBusName": "${bus_name}",
+            "Source": "bfd.workflow",
+            "DetailType": "transfer.completed",
+            "Detail": {
+              "schema": 1,
+              "transfer_id.$": "$.transfer_id",
+              "decision_id.$": "$.decision_id",
+              "uid.$": "$.uid",
+              "action.$": "$.action",
+              "response.$": "$.response",
+              "status.$": "$.ledger.status",
+              "reason.$": "$.ledger.reason",
+              "amount.$": "$.amount",
+              "payee_id.$": "$.payee_id"
+            }
+          }
+        ]
+      },
+      "ResultPath": null,
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.publish_error", "Next": "Done" }
+      ],
       "Next": "Done"
     },
     "Done": {
