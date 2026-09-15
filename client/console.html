@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BFD Operator Console</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="console.css" />
+    <script type="module" src="console.mjs"></script>
+  </head>
+  <body>
+    <div class="console">
+      <header class="console-header">
+        <div>
+          <h1>BFD operator console</h1>
+          <p class="note">Every decision, transfer, audit event and adaptation update, live from the dev stack. Analysts only.</p>
+        </div>
+        <nav class="row">
+          <a href="index.html" target="_blank" rel="noopener">Open banking client</a>
+          <span id="analyst" class="muted"></span>
+          <button type="button" id="signout" class="secondary" hidden>Sign out</button>
+        </nav>
+      </header>
+
+      <section id="signin" class="card narrow">
+        <h2>Analyst sign-in</h2>
+        <form id="signin-form">
+          <label>Email <input id="email" type="email" autocomplete="username webauthn" required /></label>
+          <label>Password <input id="password" type="password" autocomplete="current-password" /></label>
+          <label id="new-password-row" hidden>New password
+            <input id="new-password" type="password" autocomplete="new-password" minlength="12" />
+          </label>
+          <div class="row">
+            <button type="submit">Sign in with password</button>
+            <button type="button" id="passkey-signin" class="secondary">Sign in with passkey</button>
+          </div>
+        </form>
+      </section>
+
+      <main id="workspace" hidden>
+        <nav class="tabs" role="tablist">
+          <button type="button" role="tab" data-tab="users" aria-selected="true">Users</button>
+          <button type="button" role="tab" data-tab="lake" aria-selected="false">Audit lake</button>
+          <button type="button" role="tab" data-tab="research" aria-selected="false">Research results</button>
+          <label class="refresh"><input type="checkbox" id="auto-refresh" checked /> Refresh every 5 s</label>
+        </nav>
+
+        <section data-panel="users" class="split">
+          <aside class="card">
+            <div class="row spread">
+              <h2>Users</h2>
+              <button type="button" id="reload-users" class="secondary small">Reload</button>
+            </div>
+            <ul id="users" class="user-list"></ul>
+            <details class="help">
+              <summary>Try a scenario</summary>
+              <p class="note">Scenarios are seeded from a terminal with admin credentials, so the deployed permissions stay exactly as designed. From the repository root:</p>
+              <pre class="mono">python simulator/demo_scenarios.py takeover --email you@example.com</pre>
+              <p class="note">Mismatched typing profile: your next transfer on that device class is held for a passkey step-up.</p>
+              <pre class="mono">python simulator/demo_scenarios.py flagged-payee --account 123456789</pre>
+              <p class="note">Flagged payee: transfers to that account are restricted and appear here with a Release button. With takeover as well, they are blocked.</p>
+              <pre class="mono">python simulator/demo_scenarios.py enrolled-device --email you@example.com</pre>
+              <p class="note">Enrolled device: a passkey step-up there earns full trust, so adaptation learns from it.</p>
+              <pre class="mono">python simulator/demo_scenarios.py clear --email you@example.com --account 123456789</pre>
+            </details>
+          </aside>
+
+          <div id="user-view" class="stack">
+            <p id="user-empty" class="card muted">Pick a user to see their decisions, transfers and adaptation state.</p>
+
+            <div id="user-detail" class="stack" hidden>
+              <div class="tiles" id="tiles"></div>
+
+              <section class="card">
+                <h2>Transfers <span class="muted">response workflow and ledger</span></h2>
+                <div class="scroll"><table id="transfers"></table></div>
+              </section>
+
+              <section class="card">
+                <h2>Decisions <span class="muted">newest first, with the three largest contributions</span></h2>
+                <div class="scroll"><table id="decisions"></table></div>
+              </section>
+
+              <section class="card">
+                <h2>Adaptation <span class="muted">what the profile has learned, and from which sessions</span></h2>
+                <div id="adaptation" class="stack"></div>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <section data-panel="lake" class="card" hidden>
+          <div class="row spread">
+            <h2>Audit lake <span class="muted">latest events written to S3, today and yesterday (UTC)</span></h2>
+            <button type="button" id="reload-lake" class="secondary small">Reload</button>
+          </div>
+          <ol id="lake" class="events"></ol>
+        </section>
+
+        <section data-panel="research" class="stack" hidden>
+          <div id="research-numbers" class="tiles"></div>
+          <div id="research-figures" class="figures"></div>
+        </section>
+      </main>
+
+      <p id="status" role="status"></p>
+    </div>
+  </body>
+</html>
