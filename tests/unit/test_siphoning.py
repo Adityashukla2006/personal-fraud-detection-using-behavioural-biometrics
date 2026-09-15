@@ -38,6 +38,19 @@ def test_history_is_two_transfers_a_week_to_established_payees() -> None:
     assert history[0].day < -30
 
 
+def test_every_probe_types_a_sample_no_transfer_or_other_probe_uses() -> None:
+    groups = 75
+    scheduled = set(range(len(siphoning.siphon_schedule())))
+    probes = [siphoning.probe_typing_index(day, groups) for day in range(siphoning.ATTACK_DAYS)]
+    assert len(set(probes)) == len(probes)
+    assert not scheduled & set(probes)
+
+
+def test_too_few_typing_groups_is_an_error() -> None:
+    with pytest.raises(ValueError):
+        siphoning.probe_typing_index(siphoning.ATTACK_DAYS - 1, 25)
+
+
 def test_lake_events_are_archivable_and_carry_no_typing() -> None:
     at = datetime(2026, 9, 1, 10, tzinfo=UTC)
     decision, completed = siphoning.lake_events("uid-1", "t" * 32, "p" * 64, 900.0, at, 12.5)

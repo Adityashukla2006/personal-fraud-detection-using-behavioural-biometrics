@@ -10,11 +10,14 @@ Two detection moments are reported per user, because they answer different quest
     flag day       the aggregator flags the user's payments to the payee. The batch layer's own
                    verdict, with money lost before detection the total sent by then.
     restrict day   a live confirmation to that payee is restricted or blocked. Typing alone can
-                   never go past step-up (the friction ceiling), so on the enrolled device, to a
-                   payee already paid, a restriction needs the batch evidence.
+                   never go past step-up (the friction ceiling), so a restriction needs a
+                   non-behavioural channel. The batch evidence is one such channel, but payee
+                   novelty is another, so the controls, paying a new payee of their own, measure
+                   how much of the live friction comes from the new payee alone.
 
 Step-up on the live probe is recorded too. A siphoning attacker's own typing can trigger it from
-day one, which is the behavioural channel working, not the batch layer.
+day one, which is the behavioural channel working, not the batch layer. Every probe types a sample
+no other probe or replayed transfer uses, so the replay detector never fires on the simulator.
 
 Outputs, under research/results/tables:
 
@@ -324,7 +327,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
                     Key={"PK": f"PAYEE#{payee}", "SK": "RISK"}, ConsistentRead=True
                 ).get("Item", {})
 
-                group = typists[subject][len(sent[subject]) % len(typists[subject])]
+                groups = typists[subject]
+                group = groups[siphoning.probe_typing_index(day, len(groups))]
                 session_id = f"sim-{secrets.token_hex(16)}"
                 body = {
                     "session_id": session_id,

@@ -107,6 +107,20 @@ def control_schedule(subject: str) -> list[ScheduledTransfer]:
     return _schedule(control_account(subject))
 
 
+def probe_typing_index(day: int, groups: int) -> int:
+    """Which typing group a day's live probe uses.
+
+    Probes take groups from the end, one per day, so no two probes and no replayed transfer ever
+    share a typing sample. A reused sample is an exact replay, and the deployed replay detector
+    would rightly catch the simulator instead of measuring siphoning.
+    """
+    scheduled = ATTACK_DAYS // SIPHON_EVERY_DAYS
+    index = groups - 1 - day
+    if index < scheduled:
+        raise ValueError("not enough typing groups for a distinct probe on this day")
+    return index
+
+
 def lake_events(
     uid: str,
     transfer_id: str,
