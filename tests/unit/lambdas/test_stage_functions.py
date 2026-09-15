@@ -8,7 +8,7 @@ import stage_functions
 
 
 def test_every_handler_package_is_discovered() -> None:
-    assert "scoring" in stage_functions.functions()
+    assert {"scoring", "ledger", "transfers"} <= set(stage_functions.functions())
 
 
 def test_a_stage_holds_the_handler_package_and_fraudcore_only(tmp_path: Path) -> None:

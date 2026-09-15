@@ -111,13 +111,34 @@ def _event(payload: Any, subject: str | None = "user-1") -> dict[str, Any]:
     }
 
 
-def _call(event: dict[str, Any], store: FakeStore) -> tuple[int, dict[str, Any], dict[str, Any]]:
+class FakeWorkflow:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.started: list[tuple[str, str, str, str]] = []
+
+    def start(
+        self,
+        uid: str,
+        transfer_id: str,
+        request: CheckpointRequest,
+        decision: Decision,
+        response: str,
+    ) -> None:
+        if self.error:
+            raise self.error
+        self.started.append((uid, transfer_id, decision.action, response))
+
+
+def _call(
+    event: dict[str, Any], store: FakeStore, workflow: FakeWorkflow | None = None
+) -> tuple[int, dict[str, Any], dict[str, Any]]:
     deps = handler.Dependencies(
         store=store,
         model=FusionModel.load(),
         thresholds=Thresholds.load(),
         clock=lambda: NOW,
         new_id=lambda: "dec-1",
+        workflow=workflow,
     )
     response = handler.handle(event, deps)
     return response["statusCode"], json.loads(response["body"]), response["headers"]
@@ -200,3 +221,43 @@ class TestFailOpen:
         status, body, _ = _call(_event(_payload()), store)
         assert status == 200
         assert body["constraints"] != ["fail_open"]
+
+    def test_a_fail_open_confirmation_releases_the_transfer(self) -> None:
+        workflow = FakeWorkflow()
+        store = FakeStore(load_error=RuntimeError("dynamodb unavailable"))
+        _, body, _ = _call(_event(_confirmation()), store, workflow)
+        assert workflow.started == [("user-1", "dec-1", "monitor", "release")]
+        assert body["transfer"] == {"transfer_id": "dec-1", "status": "processing"}
+
+
+def _confirmation() -> dict[str, Any]:
+    return _payload(checkpoint="confirmation", transaction={"payee_id": "a" * 64, "amount": 250})
+
+
+class TestTransferWorkflow:
+    def test_a_confirmation_starts_the_workflow_with_the_policy_response(self) -> None:
+        workflow = FakeWorkflow()
+        status, body, _ = _call(_event(_confirmation()), FakeStore(), workflow)
+
+        assert status == 200
+        uid, transfer_id, action, response = workflow.started[0]
+        assert (uid, transfer_id, action) == ("user-1", "dec-1", body["action"])
+        assert body["transfer"] == {
+            "transfer_id": "dec-1",
+            "status": handler.TRANSFER_STATUS[response],
+        }
+
+    def test_earlier_checkpoints_never_start_a_transfer(self) -> None:
+        workflow = FakeWorkflow()
+        _, body, _ = _call(_event(_payload()), FakeStore(), workflow)
+        assert workflow.started == []
+        assert "transfer" not in body
+
+    def test_a_workflow_that_cannot_start_reports_a_failed_transfer(self) -> None:
+        workflow = FakeWorkflow(error=RuntimeError("states unavailable"))
+        status, body, _ = _call(_event(_confirmation()), FakeStore(), workflow)
+        assert status == 200
+        assert body["transfer"]["status"] == "failed"
+
+    def test_every_workflow_response_has_a_client_status(self) -> None:
+        assert set(handler.TRANSFER_STATUS) == {"release", "step_up", "review", "cancel"}

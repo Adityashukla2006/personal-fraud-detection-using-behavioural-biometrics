@@ -24,11 +24,12 @@ from typing import Any, Protocol
 
 from fraudcore.features import KeystrokeTiming, Transfer
 from fraudcore.fusion import FusionModel
-from fraudcore.policy import Decision, Thresholds, fail_open
+from fraudcore.policy import Decision, Response, Thresholds, fail_open, response_for
 from fraudcore.scoring import ChannelScore
 from fraudcore.session import SessionEvidence, score_session
 from scoring.request import CheckpointRequest, parse
 from scoring.store import SESSION_MAX_FIELDS, ForeignSessionError, ScoringState, Store
+from scoring.workflow import Workflow
 
 LOGGER = logging.getLogger()
 LOGGER.setLevel(logging.INFO)
@@ -52,6 +53,17 @@ class StateStore(Protocol):
     ) -> None: ...
 
 
+class TransferWorkflow(Protocol):
+    def start(
+        self,
+        uid: str,
+        transfer_id: str,
+        request: CheckpointRequest,
+        decision: Decision,
+        response: Response,
+    ) -> None: ...
+
+
 @dataclass(frozen=True)
 class Dependencies:
     store: StateStore
@@ -59,7 +71,16 @@ class Dependencies:
     thresholds: Thresholds
     clock: Callable[[], float] = time.time
     new_id: Callable[[], str] = field(default=lambda: uuid.uuid4().hex)
+    workflow: TransferWorkflow | None = None
 
+
+# How a confirmed transfer's state is reported back to the client, per workflow response.
+TRANSFER_STATUS: dict[str, str] = {
+    "release": "processing",
+    "step_up": "awaiting_step_up",
+    "review": "under_review",
+    "cancel": "blocked",
+}
 
 _dependencies: Dependencies | None = None
 
@@ -74,6 +95,12 @@ def lambda_handler(event: Mapping[str, Any], context: Any) -> dict[str, Any]:
             store=Store(boto3.client("dynamodb"), os.environ["TABLE_NAME"]),
             model=FusionModel.load(),
             thresholds=Thresholds.load(),
+            workflow=Workflow(
+                boto3.client("stepfunctions"),
+                os.environ["STATE_MACHINE_ARN"],
+                int(os.environ["STEP_UP_TIMEOUT_SECONDS"]),
+                int(os.environ["REVIEW_TIMEOUT_SECONDS"]),
+            ),
         )
     return handle(event, _dependencies)
 
@@ -122,7 +149,28 @@ def handle(event: Mapping[str, Any], deps: Dependencies) -> dict[str, Any]:
     except Exception:
         LOGGER.exception("write failed, returning the decision anyway")
 
-    return _response(200, _decision_body(decision_id, request, decision), started)
+    body = _decision_body(decision_id, request, decision)
+    if request.checkpoint == "confirmation" and deps.workflow is not None:
+        body["transfer"] = _start_transfer(uid, decision_id, request, decision, deps.workflow)
+    return _response(200, body, started)
+
+
+def _start_transfer(
+    uid: str,
+    transfer_id: str,
+    request: CheckpointRequest,
+    decision: Decision,
+    workflow: TransferWorkflow,
+) -> dict[str, str]:
+    response = response_for(decision.action)
+    try:
+        workflow.start(uid, transfer_id, request, decision, response)
+    except Exception:
+        # Not a risk decision: the transfer simply never started, so nothing is debited and the
+        # client is told so plainly.
+        LOGGER.exception("could not start the transfer workflow")
+        return {"transfer_id": transfer_id, "status": "failed"}
+    return {"transfer_id": transfer_id, "status": TRANSFER_STATUS[response]}
 
 
 def _evidence(
