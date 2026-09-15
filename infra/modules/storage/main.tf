@@ -178,6 +178,20 @@ resource "aws_s3_bucket_lifecycle_configuration" "lake" {
       storage_class = "GLACIER_IR"
     }
   }
+
+  # Athena result files are working copies of a query the aggregator has already acted on.
+  rule {
+    id     = "expire-athena-results"
+    status = "Enabled"
+
+    filter {
+      prefix = "athena-results/"
+    }
+
+    expiration {
+      days = 7
+    }
+  }
 }
 
 data "aws_iam_policy_document" "tls_only" {

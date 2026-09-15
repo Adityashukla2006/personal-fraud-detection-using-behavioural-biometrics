@@ -49,3 +49,11 @@ output "console_function_name" {
 output "console_invoke_arn" {
   value = aws_lambda_function.console.invoke_arn
 }
+
+output "aggregator_function_arn" {
+  value = aws_lambda_function.aggregator.arn
+}
+
+output "aggregator_function_name" {
+  value = aws_lambda_function.aggregator.function_name
+}

@@ -35,6 +35,14 @@ module "storage" {
   }
 }
 
+module "analytics" {
+  source = "../../modules/analytics"
+
+  name_prefix  = local.name_prefix
+  lake_bucket  = module.storage.lake_bucket
+  lake_key_arn = module.storage.lake_key_arn
+}
+
 module "auth" {
   source = "../../modules/auth"
 
@@ -59,6 +67,12 @@ module "compute" {
   lake_bucket       = module.storage.lake_bucket
   lake_key_arn      = module.storage.lake_key_arn
   build_dir         = "${local.repo_root}/build/lambdas"
+
+  athena_workgroup_name = module.analytics.workgroup_name
+  athena_workgroup_arn  = module.analytics.workgroup_arn
+  glue_database         = module.analytics.database_name
+  glue_table            = module.analytics.table_name
+  glue_resource_arns    = module.analytics.glue_resource_arns
 }
 
 module "workflow" {
@@ -79,6 +93,7 @@ module "events" {
   archive_function_name    = module.compute.archive_function_name
   adaptation_function_arn  = module.compute.adaptation_function_arn
   adaptation_function_name = module.compute.adaptation_function_name
+  aggregator_function_arn  = module.compute.aggregator_function_arn
 }
 
 module "api" {

@@ -55,7 +55,7 @@ locals {
     }
   }
 
-  packaged = toset(["scoring", "ledger", "transfers", "adaptation", "archive", "console"])
+  packaged = toset(["scoring", "ledger", "transfers", "adaptation", "archive", "console", "aggregator"])
 }
 
 data "aws_region" "current" {}
@@ -487,4 +487,106 @@ resource "aws_lambda_function" "console" {
   }
 
   depends_on = [aws_iam_role_policy.function, aws_iam_role_policy.console_access]
+}
+
+# The aggregator queries the lake through one workgroup and one table, reads only the events prefix,
+# and writes query results only under their own prefix. Its table writes are the AGG# and PAYEE#
+# prefixes above; it has no read of USER#, so it can never see or change a profile.
+resource "aws_iam_role_policy" "aggregator_batch" {
+  name = "${var.name_prefix}-aggregator-batch"
+  role = aws_iam_role.function["aggregator"].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "RunBatchQueries"
+        Effect = "Allow"
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution",
+          "athena:GetQueryResults",
+          "athena:StopQueryExecution",
+        ]
+        Resource = var.athena_workgroup_arn
+      },
+      {
+        Sid      = "ReadLakeTableDefinition"
+        Effect   = "Allow"
+        Action   = ["glue:GetDatabase", "glue:GetTable", "glue:GetPartitions"]
+        Resource = var.glue_resource_arns
+      },
+      {
+        Sid      = "LocateLake"
+        Effect   = "Allow"
+        Action   = "s3:GetBucketLocation"
+        Resource = "arn:aws:s3:::${var.lake_bucket}"
+      },
+      {
+        Sid       = "ListLakeEventsAndResults"
+        Effect    = "Allow"
+        Action    = "s3:ListBucket"
+        Resource  = "arn:aws:s3:::${var.lake_bucket}"
+        Condition = { StringLike = { "s3:prefix" = ["events/*", "athena-results/*"] } }
+      },
+      {
+        Sid      = "ReadLakeEvents"
+        Effect   = "Allow"
+        Action   = "s3:GetObject"
+        Resource = "arn:aws:s3:::${var.lake_bucket}/events/*"
+      },
+      {
+        Sid    = "WriteQueryResults"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:AbortMultipartUpload",
+          "s3:ListMultipartUploadParts",
+        ]
+        Resource = "arn:aws:s3:::${var.lake_bucket}/athena-results/*"
+      },
+      {
+        Sid      = "UseLakeKeyThroughS3"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
+        Resource = var.lake_key_arn
+        Condition = {
+          StringEquals = { "kms:ViaService" = "s3.${data.aws_region.current.region}.amazonaws.com" }
+        }
+      },
+    ]
+  })
+}
+
+resource "aws_lambda_function" "aggregator" {
+  function_name    = "${var.name_prefix}-aggregator"
+  role             = aws_iam_role.function["aggregator"].arn
+  runtime          = "python3.12"
+  architectures    = ["arm64"]
+  handler          = "aggregator.handler.lambda_handler"
+  memory_size      = 512
+  timeout          = 300
+  filename         = data.archive_file.function["aggregator"].output_path
+  source_code_hash = data.archive_file.function["aggregator"].output_base64sha256
+
+  environment {
+    variables = {
+      TABLE_NAME       = var.table_name
+      ATHENA_WORKGROUP = var.athena_workgroup_name
+      GLUE_DATABASE    = var.glue_database
+      GLUE_TABLE       = var.glue_table
+    }
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  logging_config {
+    log_format = "Text"
+    log_group  = aws_cloudwatch_log_group.function["aggregator"].name
+  }
+
+  depends_on = [aws_iam_role_policy.function, aws_iam_role_policy.aggregator_batch]
 }

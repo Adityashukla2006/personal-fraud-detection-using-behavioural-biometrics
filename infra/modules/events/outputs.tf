@@ -5,3 +5,7 @@ output "bus_name" {
 output "bus_arn" {
   value = aws_cloudwatch_event_bus.main.arn
 }
+
+output "aggregator_schedule_name" {
+  value = aws_scheduler_schedule.aggregator.name
+}

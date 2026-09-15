@@ -83,3 +83,19 @@ output "console_url" {
 output "analyst_group" {
   value = module.auth.analyst_group
 }
+
+output "aggregator_function_name" {
+  value = module.compute.aggregator_function_name
+}
+
+output "aggregator_schedule_name" {
+  value = module.events.aggregator_schedule_name
+}
+
+output "athena_workgroup" {
+  value = module.analytics.workgroup_name
+}
+
+output "glue_database" {
+  value = module.analytics.database_name
+}

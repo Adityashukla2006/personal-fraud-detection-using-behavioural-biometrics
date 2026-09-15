@@ -71,6 +71,61 @@ resource "aws_lambda_permission" "archive" {
   source_arn    = aws_cloudwatch_event_rule.archive.arn
 }
 
+# The slow plane's nightly batch. Scheduler, not a bus rule: a schedule is not an event, and
+# Scheduler invokes through a role of its own rather than a resource policy on the function.
+data "aws_iam_policy_document" "assume_scheduler" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["scheduler.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "scheduler" {
+  name               = "${var.name_prefix}-scheduler"
+  assume_role_policy = data.aws_iam_policy_document.assume_scheduler.json
+}
+
+resource "aws_iam_role_policy" "scheduler" {
+  name = "${var.name_prefix}-scheduler-invoke"
+  role = aws_iam_role.scheduler.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "InvokeAggregator"
+      Effect   = "Allow"
+      Action   = "lambda:InvokeFunction"
+      Resource = var.aggregator_function_arn
+    }]
+  })
+}
+
+resource "aws_scheduler_schedule" "aggregator" {
+  name                         = "${var.name_prefix}-nightly-aggregator"
+  description                  = "Batch siphoning, aggregate and payee-risk features"
+  schedule_expression          = var.aggregator_schedule
+  schedule_expression_timezone = "Asia/Kolkata"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = var.aggregator_function_arn
+    role_arn = aws_iam_role.scheduler.arn
+    input    = jsonencode({})
+
+    retry_policy {
+      maximum_event_age_in_seconds = 3600
+      maximum_retry_attempts       = 2
+    }
+  }
+}
+
 resource "aws_lambda_permission" "stepup_verified" {
   statement_id  = "AllowEventBridgeStepUpVerified"
   action        = "lambda:InvokeFunction"

@@ -69,6 +69,28 @@ variable "review_timeout_seconds" {
   default     = 3600
 }
 
+variable "athena_workgroup_name" {
+  description = "Workgroup the aggregator runs its lake query in."
+  type        = string
+}
+
+variable "athena_workgroup_arn" {
+  type = string
+}
+
+variable "glue_database" {
+  type = string
+}
+
+variable "glue_table" {
+  type = string
+}
+
+variable "glue_resource_arns" {
+  description = "Catalog, database and table ARNs the aggregator may read definitions from."
+  type        = list(string)
+}
+
 variable "build_dir" {
   description = "Directory 'make build' stages function packages into."
   type        = string
