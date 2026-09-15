@@ -66,7 +66,11 @@ class Reply:
 
 
 def post(url: str, body: Any, token: str) -> Reply:
-    """POST with timing. A throttled request is retried after a pause, and its time excluded."""
+    """POST with timing. A throttled request is retried after a pause, and its time excluded.
+
+    Throttling reaches the caller as 429 from API Gateway's own limit, or as 503 when the Lambda
+    invocation behind it was throttled by the account's concurrency limit.
+    """
     data = json.dumps(body).encode()
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
     for attempt in range(_THROTTLED_RETRIES + 1):
@@ -79,7 +83,7 @@ def post(url: str, body: Any, token: str) -> Reply:
         except urllib.error.HTTPError as error:
             raw, status, timing = error.read(), error.code, error.headers.get("Server-Timing")
         elapsed = (time.perf_counter() - started) * 1000
-        if status == 429 and attempt < _THROTTLED_RETRIES:
+        if status in (429, 503) and attempt < _THROTTLED_RETRIES:
             time.sleep(1.0 + attempt)
             continue
         return Reply(status, json.loads(raw or b"{}"), parse_server_timing(timing), elapsed)
