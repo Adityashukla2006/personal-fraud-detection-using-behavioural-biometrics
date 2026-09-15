@@ -51,6 +51,10 @@
           </label>
           <button type="submit">Confirm transfer</button>
         </form>
+        <p id="transfer-state" hidden>
+          Transfer <strong id="transfer-status"></strong> <span id="transfer-balance" class="muted"></span>
+        </p>
+        <button type="button" id="stepup" hidden>Verify with passkey to release</button>
       </section>
 
       <section id="decision" class="card" hidden aria-live="polite">

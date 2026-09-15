@@ -236,6 +236,78 @@ function renderDecision(decision, roundTrip, serverTiming) {
   );
 }
 
+// ---- Transfers and step-up ----------------------------------------------------------------------
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function api(method, path, body) {
+  const response = await fetch(`${config.apiUrl}${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${state.tokens.AccessToken}`,
+      ...(body ? { "Content-Type": "application/json" } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return { ok: response.ok, status: response.status, data: await response.json().catch(() => ({})) };
+}
+
+// Statuses the workflow is still moving through; anything else is where the transfer rests.
+const IN_FLIGHT = new Set(["pending", "processing", "awaiting_step_up"]);
+
+async function pollTransfer(transferId, attempts = 20) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const { ok, data } = await api("GET", `/transfers/${transferId}`);
+    if (ok && !IN_FLIGHT.has(data.status)) return data;
+    await sleep(750);
+  }
+  throw new Error("The transfer is still processing. Check again shortly.");
+}
+
+async function stepUp(transferId) {
+  // The workflow records the hold a moment after scoring returns, so the first attempts may arrive
+  // before there is anything to verify.
+  let start;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    start = await api("POST", `/transfers/${transferId}/stepup`);
+    const notReady = start.status === 404 || (start.status === 409 && start.data.status === "pending");
+    if (!notReady) break;
+    await sleep(500);
+  }
+  if (!start.ok) throw new Error(start.data.error || "Step-up could not start");
+
+  const credential = await navigator.credentials.get({ publicKey: requestOptions(start.data.options) });
+  const verify = await api("POST", `/transfers/${transferId}/stepup/verify`, {
+    session: start.data.session,
+    credential: credentialJson(credential),
+  });
+  if (!verify.ok) throw new Error(verify.data.error || "Step-up failed");
+  return pollTransfer(transferId);
+}
+
+function showTransfer(status, balance) {
+  $("transfer-state").hidden = false;
+  $("transfer-status").textContent = status.replaceAll("_", " ");
+  $("transfer-status").dataset.status = status;
+  $("transfer-balance").textContent =
+    balance === undefined || balance === null ? "" : `Balance ${Number(balance).toLocaleString()}`;
+}
+
+async function handleTransfer(transfer) {
+  if (!transfer) return;
+  showTransfer(transfer.status);
+  if (transfer.status === "failed") throw new Error("The transfer could not be started. Nothing was debited.");
+  if (transfer.status === "awaiting_step_up") {
+    $("stepup").hidden = false;
+    $("stepup").dataset.transferId = transfer.transfer_id;
+    status("This transfer is held until you verify with your passkey.");
+    return;
+  }
+  const settled = await pollTransfer(transfer.transfer_id);
+  showTransfer(settled.status, settled.balance);
+  status(`Transfer ${settled.status.replaceAll("_", " ")}.`);
+}
+
 // ---- UI -----------------------------------------------------------------------------------------
 
 async function afterSignIn(tokens, email) {
@@ -317,9 +389,20 @@ function wire() {
       const details = await transaction();
       if (!details) throw new Error("Enter a payee account and a positive amount");
       const decision = await checkpoint("confirmation", "amount", details);
-      status(`Transfer ${decision.action === "allow" || decision.action === "monitor" ? "accepted" : "held: " + decision.action.replace("_", " ")}.`);
       // The next transfer is a new scoring session.
       state.sessionId = newId();
+      await handleTransfer(decision.transfer);
+    }),
+  );
+
+  $("stepup").addEventListener(
+    "click",
+    guard(async () => {
+      status("Waiting for your passkey...");
+      const settled = await stepUp($("stepup").dataset.transferId);
+      $("stepup").hidden = true;
+      showTransfer(settled.status, settled.balance);
+      status(`Transfer ${settled.status.replaceAll("_", " ")}.`);
     }),
   );
 }
