@@ -71,3 +71,7 @@ output "state_machine_arn" {
 output "alerts_topic_arn" {
   value = module.observability.alerts_topic_arn
 }
+
+output "event_bus_name" {
+  value = module.events.bus_name
+}

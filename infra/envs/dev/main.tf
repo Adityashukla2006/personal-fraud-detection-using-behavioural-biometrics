@@ -49,6 +49,10 @@ module "compute" {
   table_key_arn     = module.data.templates_key_arn
   state_machine_arn = module.workflow.state_machine_arn
   cognito_client_id = module.auth.client_id
+  event_bus_name    = module.events.bus_name
+  event_bus_arn     = module.events.bus_arn
+  lake_bucket       = module.storage.lake_bucket
+  lake_key_arn      = module.storage.lake_key_arn
   build_dir         = "${local.repo_root}/build/lambdas"
 }
 
@@ -58,6 +62,18 @@ module "workflow" {
   name_prefix         = local.name_prefix
   ledger_function_arn = module.compute.ledger_function_arn
   alerts_topic_arn    = module.observability.alerts_topic_arn
+  event_bus_name      = module.events.bus_name
+  event_bus_arn       = module.events.bus_arn
+}
+
+module "events" {
+  source = "../../modules/events"
+
+  name_prefix              = local.name_prefix
+  archive_function_arn     = module.compute.archive_function_arn
+  archive_function_name    = module.compute.archive_function_name
+  adaptation_function_arn  = module.compute.adaptation_function_arn
+  adaptation_function_name = module.compute.adaptation_function_name
 }
 
 module "api" {

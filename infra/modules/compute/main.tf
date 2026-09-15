@@ -20,7 +20,7 @@ locals {
       read  = ["USER#*", "PAYEE#*", "AGG#*", "SESS#*"]
       write = ["SESS#*", "DEC#*"]
     }
-    # The only writer of profile and buffer items.
+    # The only writer of profile, buffer and verification items.
     adaptation = {
       read  = ["USER#*"]
       write = ["USER#*"]
@@ -41,9 +41,14 @@ locals {
       read  = ["LEDGER#*"]
       write = []
     }
+    # No table access at all: it only writes events to the lake.
+    archive = {
+      read  = []
+      write = []
+    }
   }
 
-  packaged = toset(["scoring", "ledger", "transfers"])
+  packaged = toset(["scoring", "ledger", "transfers", "adaptation", "archive"])
 }
 
 data "aws_region" "current" {}
@@ -164,6 +169,21 @@ resource "aws_iam_role_policy" "scoring_workflow" {
   })
 }
 
+resource "aws_iam_role_policy" "scoring_events" {
+  name = "${var.name_prefix}-scoring-events"
+  role = aws_iam_role.function["scoring"].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "PublishDecisionEvents"
+      Effect   = "Allow"
+      Action   = "events:PutEvents"
+      Resource = var.event_bus_arn
+    }]
+  })
+}
+
 # Task-token calls carry no state machine in their request, so they cannot be scoped to one; the
 # token itself is the capability, and only a verified passkey makes this function present it.
 resource "aws_iam_role_policy" "transfers_step_up" {
@@ -181,6 +201,34 @@ resource "aws_iam_role_policy" "transfers_step_up" {
   })
 }
 
+# Write-only, and only under the events prefix: the archive can neither read the lake back nor
+# write anywhere else in it.
+resource "aws_iam_role_policy" "archive_lake" {
+  name = "${var.name_prefix}-archive-lake"
+  role = aws_iam_role.function["archive"].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "WriteLakeEvents"
+        Effect   = "Allow"
+        Action   = "s3:PutObject"
+        Resource = "arn:aws:s3:::${var.lake_bucket}/events/*"
+      },
+      {
+        Sid      = "EncryptLakeObjectsThroughS3"
+        Effect   = "Allow"
+        Action   = ["kms:GenerateDataKey", "kms:Decrypt"]
+        Resource = var.lake_key_arn
+        Condition = {
+          StringEquals = { "kms:ViaService" = "s3.${data.aws_region.current.region}.amazonaws.com" }
+        }
+      },
+    ]
+  })
+}
+
 # Packages are staged by 'make build' and only zipped here, so Terraform never runs a build.
 data "archive_file" "function" {
   for_each = local.packaged
@@ -190,8 +238,8 @@ data "archive_file" "function" {
   output_path = "${var.build_dir}/${each.key}.zip"
 }
 
-# One resource block per function rather than for_each: scoring depends on the workflow, and the
-# workflow depends on the ledger, so a shared block would form a dependency cycle.
+# One resource block per function rather than for_each: scoring depends on the workflow and the
+# bus, and those depend on other functions, so a shared block would form a dependency cycle.
 resource "aws_lambda_function" "scoring" {
   function_name    = "${var.name_prefix}-scoring"
   role             = aws_iam_role.function["scoring"].arn
@@ -209,6 +257,7 @@ resource "aws_lambda_function" "scoring" {
       STATE_MACHINE_ARN       = var.state_machine_arn
       STEP_UP_TIMEOUT_SECONDS = tostring(var.step_up_timeout_seconds)
       REVIEW_TIMEOUT_SECONDS  = tostring(var.review_timeout_seconds)
+      EVENT_BUS_NAME          = var.event_bus_name
     }
   }
 
@@ -221,7 +270,11 @@ resource "aws_lambda_function" "scoring" {
     log_group  = aws_cloudwatch_log_group.function["scoring"].name
   }
 
-  depends_on = [aws_iam_role_policy.function, aws_iam_role_policy.scoring_workflow]
+  depends_on = [
+    aws_iam_role_policy.function,
+    aws_iam_role_policy.scoring_workflow,
+    aws_iam_role_policy.scoring_events,
+  ]
 }
 
 resource "aws_lambda_function" "ledger" {
@@ -281,4 +334,62 @@ resource "aws_lambda_function" "transfers" {
   }
 
   depends_on = [aws_iam_role_policy.function, aws_iam_role_policy.transfers_step_up]
+}
+
+resource "aws_lambda_function" "adaptation" {
+  function_name    = "${var.name_prefix}-adaptation"
+  role             = aws_iam_role.function["adaptation"].arn
+  runtime          = "python3.12"
+  architectures    = ["arm64"]
+  handler          = "adaptation.handler.lambda_handler"
+  memory_size      = 256
+  timeout          = 10
+  filename         = data.archive_file.function["adaptation"].output_path
+  source_code_hash = data.archive_file.function["adaptation"].output_base64sha256
+
+  environment {
+    variables = {
+      TABLE_NAME = var.table_name
+    }
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  logging_config {
+    log_format = "Text"
+    log_group  = aws_cloudwatch_log_group.function["adaptation"].name
+  }
+
+  depends_on = [aws_iam_role_policy.function]
+}
+
+resource "aws_lambda_function" "archive" {
+  function_name    = "${var.name_prefix}-archive"
+  role             = aws_iam_role.function["archive"].arn
+  runtime          = "python3.12"
+  architectures    = ["arm64"]
+  handler          = "archive.handler.lambda_handler"
+  memory_size      = 256
+  timeout          = 10
+  filename         = data.archive_file.function["archive"].output_path
+  source_code_hash = data.archive_file.function["archive"].output_base64sha256
+
+  environment {
+    variables = {
+      LAKE_BUCKET = var.lake_bucket
+    }
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  logging_config {
+    log_format = "Text"
+    log_group  = aws_cloudwatch_log_group.function["archive"].name
+  }
+
+  depends_on = [aws_iam_role_policy.function, aws_iam_role_policy.archive_lake]
 }

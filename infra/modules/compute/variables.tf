@@ -25,6 +25,24 @@ variable "cognito_client_id" {
   type        = string
 }
 
+variable "event_bus_name" {
+  type = string
+}
+
+variable "event_bus_arn" {
+  type = string
+}
+
+variable "lake_bucket" {
+  description = "Audit lake bucket the archive function writes events into."
+  type        = string
+}
+
+variable "lake_key_arn" {
+  description = "Customer-managed KMS key encrypting the audit lake."
+  type        = string
+}
+
 variable "step_up_timeout_seconds" {
   description = "How long a transfer waits for passkey step-up before it is cancelled."
   type        = number
