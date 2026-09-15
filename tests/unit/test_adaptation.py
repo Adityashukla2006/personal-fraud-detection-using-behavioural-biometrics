@@ -346,7 +346,9 @@ class TestPolicy:
         policy = AdaptationPolicy.load()
         assert policy.tau_min == 0.5
         assert policy.budget > 0
-        assert policy.scale_budget > 0
+        # The adopted variant freezes the scale and re-anchors to verified sessions only.
+        assert policy.scale_budget >= 0
+        assert policy.anchor in ("projected", "verified")
 
     @pytest.mark.parametrize(
         "changes",

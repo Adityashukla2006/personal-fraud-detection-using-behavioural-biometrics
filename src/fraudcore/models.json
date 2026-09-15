@@ -1,54 +1,54 @@
 {
-  "status": "uncalibrated: hand-set placeholders until research/ fits fusion on the frozen simulator (architecture sections 8.2 and 15.1)",
-  "intercept": -3.0,
+  "status": "fitted by research/fit_fusion.py on synthetic sessions (Tier 2): 1680 sessions from 28 CMU subjects; thresholds at genuine risk percentiles 80/95/99/99.9",
+  "intercept": -1.497808,
   "z_limit": 6.0,
   "channels": {
     "behaviour": {
-      "weight": 1.0,
-      "mean": 12.0,
-      "scale": 6.0,
+      "weight": 0.523756,
+      "mean": 19.521058,
+      "scale": 11.865147,
       "alert_z": 2.0
     },
     "automation": {
-      "weight": 1.5,
-      "mean": 0.1,
-      "scale": 0.2,
+      "weight": 0.948698,
+      "mean": 0.0,
+      "scale": 0.001,
       "alert_z": 2.0
     },
     "transaction": {
-      "weight": 0.8,
-      "mean": 0.5,
-      "scale": 1.0,
+      "weight": 0.389591,
+      "mean": 0.0,
+      "scale": 0.001,
       "alert_z": 2.0
     },
     "context": {
-      "weight": 1.0,
-      "mean": 0.2,
-      "scale": 0.5,
+      "weight": 0.389591,
+      "mean": 0.0,
+      "scale": 0.001,
       "alert_z": 2.0
     },
     "payee": {
-      "weight": 0.9,
-      "mean": 0.3,
-      "scale": 0.6,
+      "weight": 0.194796,
+      "mean": 0.0,
+      "scale": 0.001,
       "alert_z": 2.0
     }
   },
   "thresholds": {
-    "monitor": 20.0,
-    "step_up": 40.0,
-    "restrict": 65.0,
-    "block": 85.0
+    "monitor": 22.7881,
+    "step_up": 36.0303,
+    "restrict": 62.6479,
+    "block": 79.2753
   },
   "adaptation": {
-    "budget_status": "calibrated by research/poisoning.py: 95th percentile of 357 consecutive-session drifts across the 51 CMU subjects, centre and scale separately",
-    "budget": 6.8837,
-    "scale_budget": 7.5446,
+    "budget_status": "adopted from research/poisoning.py variant 'combined': 50th percentile of 357 consecutive-session drifts across the 51 CMU subjects; scale frozen; anchor verified",
+    "budget": 0.7519,
+    "scale_budget": 0.0,
     "tau_min": 0.5,
     "buffer_capacity": 200,
     "rebuild_every": 20,
     "cold_start_sessions": 5,
     "reanchor_days": 30.0,
-    "anchor": "projected"
+    "anchor": "verified"
   }
 }
