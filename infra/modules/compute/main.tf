@@ -47,9 +47,14 @@ locals {
       read  = []
       write = []
     }
+    # Operator console: reads across users, writes nothing to the table.
+    console = {
+      read  = ["USER#*", "LEDGER#*", "DEC#*"]
+      write = []
+    }
   }
 
-  packaged = toset(["scoring", "ledger", "transfers", "adaptation", "archive"])
+  packaged = toset(["scoring", "ledger", "transfers", "adaptation", "archive", "console"])
 }
 
 data "aws_region" "current" {}
@@ -230,6 +235,62 @@ resource "aws_iam_role_policy" "archive_lake" {
   })
 }
 
+# The console reads across users and releases reviewed transfers. It cannot write to the table,
+# cannot write to the lake, and reaches the lake only under the events prefix.
+resource "aws_iam_role_policy" "console_access" {
+  name = "${var.name_prefix}-console-access"
+  role = aws_iam_role.function["console"].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "QueryDecisionsByUser"
+        Effect   = "Allow"
+        Action   = "dynamodb:Query"
+        Resource = "${var.table_arn}/index/*"
+        Condition = {
+          "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["USER#*"] }
+        }
+      },
+      {
+        Sid      = "ListUsers"
+        Effect   = "Allow"
+        Action   = "cognito-idp:ListUsers"
+        Resource = var.user_pool_arn
+      },
+      {
+        Sid       = "ListLakeEvents"
+        Effect    = "Allow"
+        Action    = "s3:ListBucket"
+        Resource  = "arn:aws:s3:::${var.lake_bucket}"
+        Condition = { StringLike = { "s3:prefix" = ["events/*"] } }
+      },
+      {
+        Sid      = "ReadLakeEvents"
+        Effect   = "Allow"
+        Action   = "s3:GetObject"
+        Resource = "arn:aws:s3:::${var.lake_bucket}/events/*"
+      },
+      {
+        Sid      = "DecryptLakeThroughS3"
+        Effect   = "Allow"
+        Action   = "kms:Decrypt"
+        Resource = var.lake_key_arn
+        Condition = {
+          StringEquals = { "kms:ViaService" = "s3.${data.aws_region.current.region}.amazonaws.com" }
+        }
+      },
+      {
+        Sid      = "ReleaseReviewedTransfers"
+        Effect   = "Allow"
+        Action   = "states:SendTaskSuccess"
+        Resource = "*"
+      },
+    ]
+  })
+}
+
 # Packages are staged by 'make build' and only zipped here, so Terraform never runs a build.
 data "archive_file" "function" {
   for_each = local.packaged
@@ -393,4 +454,36 @@ resource "aws_lambda_function" "archive" {
   }
 
   depends_on = [aws_iam_role_policy.function, aws_iam_role_policy.archive_lake]
+}
+
+resource "aws_lambda_function" "console" {
+  function_name    = "${var.name_prefix}-console"
+  role             = aws_iam_role.function["console"].arn
+  runtime          = "python3.12"
+  architectures    = ["arm64"]
+  handler          = "console.handler.lambda_handler"
+  memory_size      = 512
+  timeout          = 15
+  filename         = data.archive_file.function["console"].output_path
+  source_code_hash = data.archive_file.function["console"].output_base64sha256
+
+  environment {
+    variables = {
+      TABLE_NAME    = var.table_name
+      USER_POOL_ID  = var.user_pool_id
+      LAKE_BUCKET   = var.lake_bucket
+      ANALYST_GROUP = var.analyst_group
+    }
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  logging_config {
+    log_format = "Text"
+    log_group  = aws_cloudwatch_log_group.function["console"].name
+  }
+
+  depends_on = [aws_iam_role_policy.function, aws_iam_role_policy.console_access]
 }

@@ -41,3 +41,11 @@ output "archive_function_arn" {
 output "archive_function_name" {
   value = aws_lambda_function.archive.function_name
 }
+
+output "console_function_name" {
+  value = aws_lambda_function.console.function_name
+}
+
+output "console_invoke_arn" {
+  value = aws_lambda_function.console.invoke_arn
+}

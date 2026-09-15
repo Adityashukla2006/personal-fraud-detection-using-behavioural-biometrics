@@ -25,6 +25,20 @@ variable "cognito_client_id" {
   type        = string
 }
 
+variable "user_pool_id" {
+  description = "User pool the console lists users from."
+  type        = string
+}
+
+variable "user_pool_arn" {
+  type = string
+}
+
+variable "analyst_group" {
+  description = "Cognito group whose members may use the operator console."
+  type        = string
+}
+
 variable "event_bus_name" {
   type = string
 }

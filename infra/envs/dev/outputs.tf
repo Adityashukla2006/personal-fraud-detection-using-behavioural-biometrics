@@ -75,3 +75,11 @@ output "alerts_topic_arn" {
 output "event_bus_name" {
   value = module.events.bus_name
 }
+
+output "console_url" {
+  value = "${module.storage.client_url}/console.html"
+}
+
+output "analyst_group" {
+  value = module.auth.analyst_group
+}

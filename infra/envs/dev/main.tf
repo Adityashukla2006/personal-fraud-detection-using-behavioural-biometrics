@@ -22,8 +22,9 @@ module "data" {
 module "storage" {
   source = "../../modules/storage"
 
-  name_prefix = local.name_prefix
-  client_dir  = "${local.repo_root}/client"
+  name_prefix  = local.name_prefix
+  client_dir   = "${local.repo_root}/client"
+  research_dir = "${local.repo_root}/research/results"
 
   client_config = {
     region     = var.region
@@ -49,6 +50,9 @@ module "compute" {
   table_key_arn     = module.data.templates_key_arn
   state_machine_arn = module.workflow.state_machine_arn
   cognito_client_id = module.auth.client_id
+  user_pool_id      = module.auth.user_pool_id
+  user_pool_arn     = module.auth.user_pool_arn
+  analyst_group     = module.auth.analyst_group
   event_bus_name    = module.events.bus_name
   event_bus_arn     = module.events.bus_arn
   lake_bucket       = module.storage.lake_bucket
@@ -95,12 +99,21 @@ module "api" {
       invoke_arn = module.compute.transfers_invoke_arn
       path       = "transfers/*"
     }
+    console = {
+      name       = module.compute.console_function_name
+      invoke_arn = module.compute.console_invoke_arn
+      path       = "console/*"
+    }
   }
 
   routes = {
-    "POST /score"                                 = "scoring"
-    "GET /transfers/{transfer_id}"                = "transfers"
-    "POST /transfers/{transfer_id}/stepup"        = "transfers"
-    "POST /transfers/{transfer_id}/stepup/verify" = "transfers"
+    "POST /score"                                         = "scoring"
+    "GET /transfers/{transfer_id}"                        = "transfers"
+    "POST /transfers/{transfer_id}/stepup"                = "transfers"
+    "POST /transfers/{transfer_id}/stepup/verify"         = "transfers"
+    "GET /console/users"                                  = "console"
+    "GET /console/users/{uid}"                            = "console"
+    "GET /console/lake"                                   = "console"
+    "POST /console/transfers/{uid}/{transfer_id}/release" = "console"
   }
 }

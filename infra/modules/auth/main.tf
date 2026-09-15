@@ -53,6 +53,13 @@ resource "aws_cognito_user_pool" "main" {
   }
 }
 
+# Operators who may see every user's decisions and release transfers held for review.
+resource "aws_cognito_user_group" "analyst" {
+  name         = "analyst"
+  user_pool_id = aws_cognito_user_pool.main.id
+  description  = "Operator console access: cross-user view and review release"
+}
+
 resource "aws_cognito_user_pool_client" "web" {
   name         = "${var.name_prefix}-web"
   user_pool_id = aws_cognito_user_pool.main.id

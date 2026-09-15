@@ -10,6 +10,10 @@ output "client_id" {
   value = aws_cognito_user_pool_client.web.id
 }
 
+output "analyst_group" {
+  value = aws_cognito_user_group.analyst.name
+}
+
 output "issuer" {
   value = "https://${aws_cognito_user_pool.main.endpoint}"
 }
