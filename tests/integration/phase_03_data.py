@@ -148,3 +148,32 @@ class TestLeastPrivilege:
             ],
         )
         assert result["EvaluationResults"][0]["EvalDecision"] == expected
+
+    @pytest.mark.parametrize("function", ["scoring", "adaptation", "aggregator", "ledger"])
+    @pytest.mark.parametrize(
+        ("via_service", "expected"),
+        [("dynamodb", "allowed"), ("s3", "implicitDeny")],
+    )
+    def test_table_roles_use_the_key_only_through_dynamodb(
+        self,
+        aws: boto3.Session,
+        outputs: dict[str, Any],
+        function: str,
+        via_service: str,
+        expected: str,
+    ) -> None:
+        # The table is under a customer-managed key, so a role without kms:Decrypt cannot read it
+        # at all. The same permission must not let a role decrypt through any other service.
+        result = aws.client("iam").simulate_principal_policy(
+            PolicySourceArn=outputs["function_role_arns"][function],
+            ActionNames=["kms:Decrypt"],
+            ResourceArns=[outputs["templates_key_arn"]],
+            ContextEntries=[
+                {
+                    "ContextKeyName": "kms:ViaService",
+                    "ContextKeyValues": [f"{via_service}.{outputs['region']}.amazonaws.com"],
+                    "ContextKeyType": "string",
+                }
+            ],
+        )
+        assert result["EvaluationResults"][0]["EvalDecision"] == expected
