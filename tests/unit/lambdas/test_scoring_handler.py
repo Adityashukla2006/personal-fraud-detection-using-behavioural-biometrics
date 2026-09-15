@@ -318,6 +318,26 @@ class TestDecisionEvents:
         _call_with_events(_event(_payload()), store, events)
         assert events.published[0][1]["constraints"] == ["fail_open"]
 
+    def test_server_timing_breaks_the_handler_into_stages(self) -> None:
+        deps = handler.Dependencies(
+            store=FakeStore(),
+            model=FusionModel.load(),
+            thresholds=Thresholds.load(),
+            clock=lambda: NOW,
+            new_id=lambda: "dec-1",
+            workflow=FakeWorkflow(),
+            events=FakeEvents(),
+        )
+        confirmation = handler.handle(_event(_confirmation()), deps)["headers"]["Server-Timing"]
+        login = handler.handle(_event(_payload()), deps)["headers"]["Server-Timing"]
+
+        def stages(header: str) -> list[str]:
+            return [part.split(";")[0].strip() for part in header.split(",")]
+
+        # handler comes first, so a reader that takes the first duration gets the total.
+        assert stages(confirmation) == ["handler", "read", "score", "write", "publish", "workflow"]
+        assert stages(login) == ["handler", "read", "score", "write", "publish"]
+
     def test_a_publish_failure_never_changes_the_response(self) -> None:
         quiet = FakeEvents()
         _, expected = _call_with_events(_event(_payload()), FakeStore(), quiet)

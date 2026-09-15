@@ -9,6 +9,11 @@ Fail open (CLAUDE.md section 2). A failure reading state, or any error while sco
 ``monitor`` with zero confidence. A failure writing or publishing returns the decision anyway. The
 only responses that are not a decision are for requests that are malformed or not the caller's to
 make.
+
+Latency is a reported result, so the response's Server-Timing header carries each stage's share:
+``handler`` in total, then ``read``, ``score``, ``write``, ``publish`` and, at confirmation,
+``workflow``. HTTP APIs do not support X-Ray, and a tracing SDK would be a runtime dependency, so
+this is how the in-function breakdown is measured.
 """
 
 from __future__ import annotations
@@ -19,7 +24,8 @@ import logging
 import os
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -94,6 +100,28 @@ TRANSFER_STATUS: dict[str, str] = {
 _dependencies: Dependencies | None = None
 
 
+class Timings:
+    """Milliseconds spent in each stage of one request, in the order they ran."""
+
+    def __init__(self) -> None:
+        self.started = time.perf_counter()
+        self.stages: dict[str, float] = {}
+
+    @contextmanager
+    def stage(self, name: str) -> Iterator[None]:
+        began = time.perf_counter()
+        try:
+            yield
+        finally:
+            self.stages[name] = self.stages.get(name, 0.0) + (time.perf_counter() - began) * 1000
+
+    def header(self) -> str:
+        total = (time.perf_counter() - self.started) * 1000
+        parts = [f"handler;dur={total:.1f}"]
+        parts += [f"{name};dur={value:.1f}" for name, value in self.stages.items()]
+        return ", ".join(parts)
+
+
 def lambda_handler(event: Mapping[str, Any], context: Any) -> dict[str, Any]:
     global _dependencies
     if _dependencies is None:
@@ -116,16 +144,16 @@ def lambda_handler(event: Mapping[str, Any], context: Any) -> dict[str, Any]:
 
 
 def handle(event: Mapping[str, Any], deps: Dependencies) -> dict[str, Any]:
-    started = time.perf_counter()
+    timings = Timings()
 
     uid = _subject(event)
     if uid is None:
-        return _response(401, {"error": "unauthenticated"}, started)
+        return _response(401, {"error": "unauthenticated"}, timings)
 
     try:
         request = parse(_body(event))
     except ValueError as error:
-        return _response(400, {"error": str(error)}, started)
+        return _response(400, {"error": str(error)}, timings)
 
     now = deps.clock()
     decision_id = deps.new_id()
@@ -134,37 +162,42 @@ def handle(event: Mapping[str, Any], deps: Dependencies) -> dict[str, Any]:
     loaded = False
 
     try:
-        state = deps.store.load(uid, request, now)
+        with timings.stage("read"):
+            state = deps.store.load(uid, request, now)
         loaded = True
-        fields = (state.session_fields + request.fields)[-SESSION_MAX_FIELDS:]
-        scored = score_session(
-            _evidence(state, fields, request, now),
-            deps.model,
-            deps.thresholds,
-            request.checkpoint,
-        )
+        with timings.stage("score"):
+            fields = (state.session_fields + request.fields)[-SESSION_MAX_FIELDS:]
+            scored = score_session(
+                _evidence(state, fields, request, now),
+                deps.model,
+                deps.thresholds,
+                request.checkpoint,
+            )
         scores, decision = scored.scores, scored.decision
     except ForeignSessionError:
-        return _response(403, {"error": "session belongs to another user"}, started)
+        return _response(403, {"error": "session belongs to another user"}, timings)
     except Exception:
         LOGGER.exception("scoring failed, failing open to monitor")
         decision = fail_open()
 
     try:
-        # Without the earlier fields a session write would erase them, so it is skipped when the
-        # read failed. The decision is always recorded.
-        if loaded:
-            deps.store.save_session(uid, request.session_id, fields, now)
-        deps.store.save_decision(uid, decision_id, request, scores, decision, now)
+        with timings.stage("write"):
+            # Without the earlier fields a session write would erase them, so it is skipped when
+            # the read failed. The decision is always recorded.
+            if loaded:
+                deps.store.save_session(uid, request.session_id, fields, now)
+            deps.store.save_decision(uid, decision_id, request, scores, decision, now)
     except Exception:
         LOGGER.exception("write failed, returning the decision anyway")
 
-    _publish(uid, decision_id, request, scores, decision, now, deps)
+    with timings.stage("publish"):
+        _publish(uid, decision_id, request, scores, decision, now, deps)
 
     body = _decision_body(decision_id, request, decision)
     if request.checkpoint == "confirmation" and deps.workflow is not None:
-        body["transfer"] = _start_transfer(uid, decision_id, request, decision, deps.workflow)
-    return _response(200, body, started)
+        with timings.stage("workflow"):
+            body["transfer"] = _start_transfer(uid, decision_id, request, decision, deps.workflow)
+    return _response(200, body, timings)
 
 
 def _publish(
@@ -279,15 +312,14 @@ def _decision_body(
     }
 
 
-def _response(status: int, body: Mapping[str, Any], started: float) -> dict[str, Any]:
-    elapsed_ms = (time.perf_counter() - started) * 1000
+def _response(status: int, body: Mapping[str, Any], timings: Timings) -> dict[str, Any]:
     return {
         "statusCode": status,
         "headers": {
             "Content-Type": "application/json",
-            # Handler time, readable from the browser and the latency script, so API Gateway and
-            # network overhead can be separated from compute.
-            "Server-Timing": f"handler;dur={elapsed_ms:.1f}",
+            # Per-stage handler time, readable from the browser and the simulator, so API Gateway
+            # and network overhead can be separated from compute.
+            "Server-Timing": timings.header(),
         },
         "body": json.dumps(body),
     }
