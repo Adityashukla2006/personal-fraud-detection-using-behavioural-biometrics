@@ -1,138 +1,242 @@
-"""Measure warm scoring latency against the deployed dev stack.
+"""Phase 8 latency: warm and cold, end to end and broken down by stage.
 
-Signs in a temporary user, warms the function, then sends sequential login checkpoints, each in a
-fresh session so payload size is constant. Two numbers per request: the round trip seen from this
-machine, which includes the internet path, and the handler's own time from its Server-Timing
-header. The gap between them is API Gateway, Lambda invocation and network. A per-segment breakdown
-comes from X-Ray in Phase 8.
+Three sources, because no single one sees everything:
 
-Writes research/results/tables/phase4_latency.csv. Cleans up its user and every item it created.
+    this machine     the round trip of every call, including the internet path to ap-south-1
+    Server-Timing    the handler's own stages: read, score, write, publish, workflow
+    X-Ray            the Lambda service's view of the scoring function: its init on a cold start,
+                     the function's own run, the runtime overhead, and the service total
+
+HTTP APIs do not support X-Ray, so API Gateway's share is reported as the round trip minus the
+handler, labelled as API Gateway plus network. On a cold request that difference also contains the
+function's init, which X-Ray reports separately.
+
+One X-Ray trace covers the whole request, including the ledger, archive and workflow it fans out
+to, so only segments named for the scoring function are read.
+
+Warm requests follow a warm-up. Cold starts are forced: changing the function's description makes
+Lambda retire its execution environments, so the next request starts a fresh one. The description
+is restored at the end.
+
+Writes research/results/tables/phase8_latency.csv and cleans up its user and every item it created.
+
+Usage, from the repository root::
+
+    python simulator/measure_latency.py [--warm 100] [--confirmations 30] [--cold 10]
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
-import math
-import os
-import re
 import secrets
-import subprocess
 import sys
 import time
-import urllib.request
+from collections import defaultdict
+from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import boto3
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "tests" / "integration"))
+for _path in (REPO_ROOT / "src", REPO_ROOT / "src" / "lambdas", REPO_ROOT):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
-from phase_04_scoring import _payload, sign_in  # noqa: E402
+from simulator import attacks, cmu  # noqa: E402
+from simulator.stack import RESULTS, Users, outputs, percentile, post  # noqa: E402
 
-RESULTS = REPO_ROOT / "research" / "results" / "tables" / "phase4_latency.csv"
-
-
-def outputs() -> dict[str, Any]:
-    terraform = os.environ.get("TERRAFORM", "terraform")
-    result = subprocess.run(
-        [terraform, f"-chdir={REPO_ROOT / 'infra' / 'envs' / 'dev'}", "output", "-json"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return {name: entry["value"] for name, entry in json.loads(result.stdout).items()}
+WARMUP = 5
+TRACE_WAIT_SECONDS = 120
+HANDLER_STAGES = ("handler", "read", "score", "write", "publish", "workflow")
 
 
-def percentile(values: list[float], fraction: float) -> float:
-    """Nearest-rank percentile: an observed value, never an interpolation."""
-    ordered = sorted(values)
-    return ordered[max(0, math.ceil(fraction * len(ordered)) - 1)]
+def _milliseconds(node: dict[str, Any]) -> float:
+    return round((node["end_time"] - node["start_time"]) * 1000, 1)
 
 
-def score(url: str, body: dict[str, Any], token: str) -> tuple[float, float, str]:
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
-        method="POST",
-    )
-    started = time.perf_counter()
-    with urllib.request.urlopen(request, timeout=15) as response:
-        payload = json.loads(response.read())
-        timing = response.headers.get("Server-Timing", "")
-    round_trip = (time.perf_counter() - started) * 1000
-    handler = float(re.search(r"dur=([\d.]+)", timing).group(1))
-    return round_trip, handler, payload["decision_id"]
+def lambda_breakdown(document: dict[str, Any], function: str) -> dict[str, float]:
+    """One trace's view of ``function``, in milliseconds.
+
+    ``service`` is the Lambda service segment (origin ``AWS::Lambda``): the whole invocation as the
+    service saw it. ``function`` is the function segment (origin ``AWS::Lambda::Function``), and its
+    ``Init`` and ``Overhead`` subsegments give ``init``, present only on a cold start, and
+    ``overhead``. Segments belonging to any other function in the trace are ignored.
+    """
+    breakdown: dict[str, float] = {}
+    for segment in document.get("Segments", []):
+        body = json.loads(segment["Document"])
+        if body.get("name") != function or "end_time" not in body:
+            continue
+        if body.get("origin") == "AWS::Lambda":
+            breakdown["service"] = _milliseconds(body)
+        elif body.get("origin") == "AWS::Lambda::Function":
+            breakdown["function"] = _milliseconds(body)
+            for sub in body.get("subsegments", []):
+                if sub.get("name") in ("Init", "Overhead") and "end_time" in sub:
+                    breakdown[sub["name"].lower()] = _milliseconds(sub)
+    return breakdown
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--samples", type=int, default=100)
-    parser.add_argument("--warmup", type=int, default=5)
-    args = parser.parse_args()
+def summarise(samples: dict[tuple[str, str], list[float]]) -> list[dict[str, Any]]:
+    rows = []
+    for (condition, measure), values in sorted(samples.items()):
+        if values:
+            rows.append(
+                {
+                    "condition": condition,
+                    "measure": measure,
+                    "samples": len(values),
+                    "p50_ms": round(percentile(values, 0.50), 1),
+                    "p95_ms": round(percentile(values, 0.95), 1),
+                    "max_ms": round(max(values), 1),
+                }
+            )
+    return rows
+
+
+def record(samples: dict[tuple[str, str], list[float]], condition: str, reply: Any) -> None:
+    samples[(condition, "round_trip")].append(reply.round_trip_ms)
+    handler = reply.server_timing.get("handler")
+    if handler is not None:
+        samples[(condition, "api_gateway_and_network")].append(reply.round_trip_ms - handler)
+    for stage in HANDLER_STAGES:
+        if stage in reply.server_timing:
+            samples[(condition, stage)].append(reply.server_timing[stage])
+
+
+def traces(aws: Any, function: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
+    xray = aws.client("xray")
+    ids: list[str] = []
+    request: dict[str, Any] = {
+        "StartTime": start,
+        "EndTime": end,
+        "FilterExpression": f'service("{function}")',
+    }
+    while True:
+        page = xray.get_trace_summaries(**request)
+        ids += [summary["Id"] for summary in page.get("TraceSummaries", [])]
+        if not page.get("NextToken"):
+            break
+        request["NextToken"] = page["NextToken"]
+    documents = []
+    for offset in range(0, len(ids), 5):
+        documents += xray.batch_get_traces(TraceIds=ids[offset : offset + 5])["Traces"]
+    return documents
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Warm and cold latency, by stage.")
+    parser.add_argument("--warm", type=int, default=100)
+    parser.add_argument("--confirmations", type=int, default=30)
+    parser.add_argument("--cold", type=int, default=10)
+    args = parser.parse_args(argv)
+
+    import boto3
+    from boto3.dynamodb.conditions import Key
 
     out = outputs()
     aws = boto3.Session(region_name=out["region"])
-    cognito = aws.client("cognito-idp")
-    table = aws.client("dynamodb")
+    lambda_client = aws.client("lambda")
+    table = aws.resource("dynamodb").Table(out["table_name"])
+    function = out["scoring_function_name"]
     url = f"{out['api_url']}/score"
+    _, reps = next(iter(cmu.load().items()))
+    human = [cmu.field(rep) for rep in reps[: args.warm + args.confirmations + args.cold + WARMUP]]
+    known = {"payee_id": attacks.payee_id("latency-probe"), "amount": 25.0}
 
-    email = f"test-latency-{secrets.token_hex(4)}@example.com"
-    password = f"{secrets.token_urlsafe(18)}Aa1"
-    cognito.admin_create_user(
-        UserPoolId=out["user_pool_id"],
-        Username=email,
-        TemporaryPassword=password,
-        UserAttributes=[
-            {"Name": "email", "Value": email},
-            {"Name": "email_verified", "Value": "true"},
-        ],
-        MessageAction="SUPPRESS",
+    users = Users(aws, out)
+    samples: dict[tuple[str, str], list[float]] = defaultdict(list)
+    created: list[tuple[str, str]] = []
+    account: dict[str, str] = {}
+    original = lambda_client.get_function_configuration(FunctionName=function).get(
+        "Description", ""
     )
-    created: list[str] = []
-    round_trips: list[float] = []
-    handlers: list[float] = []
+
+    def call(checkpoint: str, index: int) -> Any:
+        session = f"sim-{secrets.token_hex(16)}"
+        body: dict[str, Any] = {
+            "session_id": session,
+            "checkpoint": checkpoint,
+            "device": {
+                "device_id": "sim-latency-probe",
+                "max_touch_points": 0,
+                "coarse_pointer": False,
+                "short_side_px": 1080,
+            },
+            "behaviour": {"fields": [human[index % len(human)]]},
+        }
+        if checkpoint == "confirmation":
+            body["transaction"] = known
+        reply = post(url, body, account["token"])
+        if reply.status != 200:
+            raise RuntimeError(f"{checkpoint} returned {reply.status}: {reply.body}")
+        created.extend([(f"SESS#{session}", "META"), (f"DEC#{reply.body['decision_id']}", "META")])
+        return reply
+
     try:
-        cognito.admin_set_user_password(
-            UserPoolId=out["user_pool_id"], Username=email, Password=password, Permanent=True
-        )
-        token = sign_in(cognito, out["user_pool_client_id"], email, password)
+        account.update(users.create("sim-latency"))
+        warm_start = datetime.now(UTC)
+        for index in range(WARMUP):
+            call("login", index)
+        for index in range(args.warm):
+            record(samples, "warm", call("login", index))
+        for index in range(args.confirmations):
+            record(samples, "warm_confirmation", call("confirmation", index))
+        warm_end = datetime.now(UTC)
 
-        for index in range(args.warmup + args.samples):
-            session = f"test-latency-{hashlib.sha256(f'{email}{index}'.encode()).hexdigest()[:24]}"
-            round_trip, handler, decision_id = score(url, _payload(session), token)
-            created += [f"SESS#{session}", f"DEC#{decision_id}"]
-            if index >= args.warmup:
-                round_trips.append(round_trip)
-                handlers.append(handler)
+        cold_start = datetime.now(UTC)
+        for index in range(args.cold):
+            lambda_client.update_function_configuration(
+                FunctionName=function, Description=f"cold start probe {index} {time.time():.0f}"
+            )
+            lambda_client.get_waiter("function_updated_v2").wait(FunctionName=function)
+            record(samples, "cold", call("login", index))
+        cold_end = datetime.now(UTC)
     finally:
-        cognito.admin_delete_user(UserPoolId=out["user_pool_id"], Username=email)
-        for partition in created:
-            table.delete_item(
-                TableName=out["table_name"], Key={"PK": {"S": partition}, "SK": {"S": "META"}}
-            )
+        lambda_client.update_function_configuration(FunctionName=function, Description=original)
+        users.close()
+        with table.batch_writer() as batch:
+            for partition, sort in created:
+                batch.delete_item(Key={"PK": partition, "SK": sort})
+        if account:
+            for prefix in ("USER#", "LEDGER#"):
+                condition = Key("PK").eq(f"{prefix}{account['sub']}")
+                for item in table.query(KeyConditionExpression=condition)["Items"]:
+                    table.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
 
-    RESULTS.parent.mkdir(parents=True, exist_ok=True)
-    with RESULTS.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["measure", "condition", "samples", "p50_ms", "p95_ms", "max_ms"])
-        for name, values in (("round_trip_client", round_trips), ("handler", handlers)):
-            writer.writerow(
-                [
-                    name,
-                    "warm",
-                    len(values),
-                    f"{percentile(values, 0.50):.1f}",
-                    f"{percentile(values, 0.95):.1f}",
-                    f"{max(values):.1f}",
-                ]
-            )
-    print(RESULTS.read_text(encoding="utf-8"))
+    # X-Ray indexes traces a little after the requests; wait until the count stops growing.
+    margin = timedelta(seconds=5)
+    deadline = time.monotonic() + TRACE_WAIT_SECONDS
+    documents: list[dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        time.sleep(15)
+        latest = traces(aws, function, warm_start - margin, cold_end + margin)
+        if documents and len(latest) == len(documents):
+            break
+        documents = latest
+
+    for document in documents:
+        breakdown = lambda_breakdown(document, function)
+        condition = "cold" if "init" in breakdown else "warm"
+        for name, value in breakdown.items():
+            samples[(condition, f"lambda_{name}")].append(value)
+
+    rows = summarise(samples)
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    path = RESULTS / "phase8_latency.csv"
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    print(path.read_text(encoding="utf-8"))
+    print(
+        f"windows: warm {warm_start:%H:%M:%S}-{warm_end:%H:%M:%S}, "
+        f"cold {cold_start:%H:%M:%S}-{cold_end:%H:%M:%S}; {len(documents)} X-Ray traces"
+    )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
