@@ -71,6 +71,20 @@ def test_standardisation_uses_genuine_sessions_and_floors_the_scale() -> None:
     assert set(standard) == set(CHANNELS)
 
 
+def test_a_channel_without_genuine_variance_keeps_its_prior_scale() -> None:
+    # Genuine sessions all score payee 0; a 1e-3 floor would make a new payee a saturated anomaly.
+    silent = ChannelScore(0.0, 1.0)
+    rows = [
+        {"label": 0, "scores": {"behaviour": ChannelScore(4.0, 1.0), "payee": silent}},
+        {"label": 0, "scores": {"behaviour": ChannelScore(6.0, 1.0), "payee": silent}},
+    ]
+    standard = fit_fusion.standardisation(rows, {"behaviour": 0.5, "payee": 0.6})
+    assert standard["payee"] == pytest.approx((0.0, 0.6))
+    # A channel with more genuine variance than its prior keeps the measured deviation.
+    assert standard["behaviour"] == pytest.approx((5.0, 1.0))
+    assert set(fit_fusion.PRIOR_SCALES) == set(CHANNELS)
+
+
 def _reps(subject: str, scale: float) -> list[Repetition]:
     """Human-like typing: irregular enough to pass the regularity test, and never repeating a
     rhythm, so only a true copy of an earlier repetition matches the replay history."""

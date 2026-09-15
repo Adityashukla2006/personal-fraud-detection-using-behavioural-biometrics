@@ -82,6 +82,19 @@ TRAINING_SUBJECTS = 28
 SESSIONS_PER_CLASS = 12
 L2 = 0.01
 SCALE_FLOOR = 1e-3
+
+# Prior deviation per channel: the hand-set scales from before any fitting. The simulator's genuine
+# sessions always use the enrolled device and a known payee, so the non-behavioural channels have
+# no genuine variance to measure. Standardising by the floor instead would turn any benign non-zero
+# score (a new payee, a new laptop) into a saturated anomaly and block a real customer. A channel's
+# scale is never allowed below its prior, so the fit can only make a channel more tolerant.
+PRIOR_SCALES = {
+    "behaviour": 6.0,
+    "automation": 0.2,
+    "transaction": 1.0,
+    "context": 0.5,
+    "payee": 0.6,
+}
 ALERT_Z = 2.0
 TRANSFER_HOUR = 12
 
@@ -182,15 +195,22 @@ def build_sessions(
     return rows
 
 
-def standardisation(rows: Sequence[Mapping[str, Any]]) -> dict[str, tuple[float, float]]:
-    """Mean and floored standard deviation of each channel's raw score over genuine sessions."""
+def standardisation(
+    rows: Sequence[Mapping[str, Any]], priors: Mapping[str, float] | None = None
+) -> dict[str, tuple[float, float]]:
+    """Mean and standard deviation of each channel's raw score over genuine sessions.
+
+    The deviation is never below ``priors[channel]`` when priors are given, and never below
+    ``SCALE_FLOOR`` in any case.
+    """
     genuine = [row["scores"] for row in rows if row["label"] == 0]
     if not genuine:
         raise ValueError("standardisation needs genuine sessions")
     result = {}
     for name in CHANNELS:
         values = np.array([scores.get(name, NO_EVIDENCE).score for scores in genuine], dtype=float)
-        result[name] = (float(values.mean()), max(float(values.std()), SCALE_FLOOR))
+        floor = max(SCALE_FLOOR, (priors or {}).get(name, 0.0))
+        result[name] = (float(values.mean()), max(float(values.std()), floor))
     return result
 
 
@@ -310,7 +330,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     placeholder = FusionModel.from_dict(current)
     placeholder_thresholds = Thresholds.from_dict(current["thresholds"])
 
-    standard = standardisation(train_rows)
+    standard = standardisation(train_rows, PRIOR_SCALES)
     x = design(train_rows, template(standard, placeholder.z_limit))
     y = np.array([row["label"] for row in train_rows], dtype=float)
     intercept, fitted = fit(x, y)

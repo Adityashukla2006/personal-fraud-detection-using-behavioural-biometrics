@@ -1,44 +1,44 @@
 {
   "status": "fitted by research/fit_fusion.py on synthetic sessions (Tier 2): 1680 sessions from 28 CMU subjects; thresholds at genuine risk percentiles 80/95/99/99.9",
-  "intercept": -1.497808,
+  "intercept": -1.471321,
   "z_limit": 6.0,
   "channels": {
     "behaviour": {
-      "weight": 0.523756,
+      "weight": 0.521312,
       "mean": 19.521058,
       "scale": 11.865147,
       "alert_z": 2.0
     },
     "automation": {
-      "weight": 0.948698,
+      "weight": 1.070648,
       "mean": 0.0,
-      "scale": 0.001,
+      "scale": 0.2,
       "alert_z": 2.0
     },
     "transaction": {
-      "weight": 0.389591,
+      "weight": 0.690809,
       "mean": 0.0,
-      "scale": 0.001,
+      "scale": 1.0,
       "alert_z": 2.0
     },
     "context": {
-      "weight": 0.389591,
+      "weight": 0.264565,
       "mean": 0.0,
-      "scale": 0.001,
+      "scale": 0.5,
       "alert_z": 2.0
     },
     "payee": {
-      "weight": 0.194796,
+      "weight": 0.220471,
       "mean": 0.0,
-      "scale": 0.001,
+      "scale": 0.6,
       "alert_z": 2.0
     }
   },
   "thresholds": {
-    "monitor": 22.7881,
-    "step_up": 36.0303,
-    "restrict": 62.6479,
-    "block": 79.2753
+    "monitor": 23.2344,
+    "step_up": 36.5429,
+    "restrict": 63.0456,
+    "block": 79.4896
   },
   "adaptation": {
     "budget_status": "adopted from research/poisoning.py variant 'combined': 50th percentile of 357 consecutive-session drifts across the 51 CMU subjects; scale frozen; anchor verified",
