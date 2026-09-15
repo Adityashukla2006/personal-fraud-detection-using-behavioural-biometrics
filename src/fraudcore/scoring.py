@@ -50,8 +50,8 @@ from fraudcore.features import (
     SessionContext,
     Transfer,
     UserAggregates,
+    coefficient_of_variation,
     context_features,
-    interval_cv,
     payee_features,
     timing_shingles,
     transaction_features,
@@ -286,17 +286,36 @@ def automation_channel(
     tells to be caught. ``replay_history`` is the set of shingles from the user's recent sessions;
     ``None`` means it could not be read, and only regularity is scored.
     """
-    regularity = max(0.0, (AUTOMATION_HUMAN_CV - interval_cv(timing)) / AUTOMATION_HUMAN_CV)
+    return session_automation_channel((timing,), replay_history)
+
+
+def session_automation_channel(
+    fields: Sequence[KeystrokeTiming], replay_history: frozenset[int] | None = None
+) -> ChannelScore:
+    """Automation over every field entered so far in a session.
+
+    Intervals are pooled within fields only: the gap between two fields is navigation, not typing,
+    and would inflate the CV of a perfectly regular script. Shingles are likewise taken per field.
+    For a single field this is exactly ``automation_channel``.
+    """
+    if not fields:
+        return NO_EVIDENCE
+
+    intervals = [interval for field in fields for interval in field.down_down]
+    regularity = max(
+        0.0,
+        (AUTOMATION_HUMAN_CV - coefficient_of_variation(intervals)) / AUTOMATION_HUMAN_CV,
+    )
 
     replay = 0.0
     if replay_history:
-        shingles = timing_shingles(timing)
+        shingles = frozenset().union(*(timing_shingles(field) for field in fields))
         if shingles:
             replay = len(shingles & replay_history) / len(shingles)
 
     return ChannelScore(
         score=max(regularity, replay),
-        confidence=_saturating(len(timing.down_down), AUTOMATION_FULL_INTERVALS),
+        confidence=_saturating(len(intervals), AUTOMATION_FULL_INTERVALS),
     )
 
 

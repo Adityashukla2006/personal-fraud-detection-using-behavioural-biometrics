@@ -168,6 +168,16 @@ def extract(timing: KeystrokeTiming) -> dict[str, float]:
     }
 
 
+def coefficient_of_variation(values: Sequence[float]) -> float:
+    """Sample coefficient of variation, or zero for a non-positive mean."""
+    if len(values) < 2:
+        raise ValueError("coefficient of variation needs at least two values")
+    mean = _mean(values)
+    if mean <= 0:
+        return 0.0
+    return _sample_std(values) / mean
+
+
 def interval_cv(timing: KeystrokeTiming) -> float:
     """Coefficient of variation of the down-down intervals.
 
@@ -175,10 +185,7 @@ def interval_cv(timing: KeystrokeTiming) -> float:
     lightly jittered delay is not, so a CV near zero is the automation signature. All-zero
     intervals are perfectly regular and report zero rather than dividing by zero.
     """
-    mean = _mean(timing.down_down)
-    if mean <= 0:
-        return 0.0
-    return _sample_std(timing.down_down) / mean
+    return coefficient_of_variation(timing.down_down)
 
 
 # Replay detection quantises timings to this resolution before hashing. At 1 ms an exact replay of
