@@ -40,3 +40,19 @@ resource "aws_budgets_budget" "monthly" {
     subscriber_email_addresses = [var.alert_email]
   }
 }
+
+# Latency is a reported result, so dev traces every request by default rather than the 5% default
+# sampling rate. Traces are free well beyond the traffic this project generates.
+resource "aws_xray_sampling_rule" "functions" {
+  rule_name      = "${var.name_prefix}-functions"
+  priority       = 1000
+  version        = 1
+  reservoir_size = 1
+  fixed_rate     = var.xray_sampling_rate
+  service_name   = "${var.name_prefix}-*"
+  service_type   = "*"
+  host           = "*"
+  http_method    = "*"
+  url_path       = "*"
+  resource_arn   = "*"
+}

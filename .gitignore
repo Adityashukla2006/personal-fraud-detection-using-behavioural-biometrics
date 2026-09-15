@@ -30,6 +30,7 @@ research/data/processed/*
 *.tfstate
 *.tfstate.backup
 *.tfvars
+*.tfplan
 
 # Build output
 dist/

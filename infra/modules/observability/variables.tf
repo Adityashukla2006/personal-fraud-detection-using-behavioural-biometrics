@@ -9,3 +9,8 @@ variable "budget_limit_usd" {
 variable "alert_email" {
   type = string
 }
+
+variable "xray_sampling_rate" {
+  type    = number
+  default = 1.0
+}
