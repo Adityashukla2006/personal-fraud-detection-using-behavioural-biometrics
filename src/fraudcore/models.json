@@ -3,11 +3,51 @@
   "intercept": -3.0,
   "z_limit": 6.0,
   "channels": {
-    "behaviour": {"weight": 1.0, "mean": 12.0, "scale": 6.0, "alert_z": 2.0},
-    "automation": {"weight": 1.5, "mean": 0.1, "scale": 0.2, "alert_z": 2.0},
-    "transaction": {"weight": 0.8, "mean": 0.5, "scale": 1.0, "alert_z": 2.0},
-    "context": {"weight": 1.0, "mean": 0.2, "scale": 0.5, "alert_z": 2.0},
-    "payee": {"weight": 0.9, "mean": 0.3, "scale": 0.6, "alert_z": 2.0}
+    "behaviour": {
+      "weight": 1.0,
+      "mean": 12.0,
+      "scale": 6.0,
+      "alert_z": 2.0
+    },
+    "automation": {
+      "weight": 1.5,
+      "mean": 0.1,
+      "scale": 0.2,
+      "alert_z": 2.0
+    },
+    "transaction": {
+      "weight": 0.8,
+      "mean": 0.5,
+      "scale": 1.0,
+      "alert_z": 2.0
+    },
+    "context": {
+      "weight": 1.0,
+      "mean": 0.2,
+      "scale": 0.5,
+      "alert_z": 2.0
+    },
+    "payee": {
+      "weight": 0.9,
+      "mean": 0.3,
+      "scale": 0.6,
+      "alert_z": 2.0
+    }
   },
-  "thresholds": {"monitor": 20.0, "step_up": 40.0, "restrict": 65.0, "block": 85.0}
+  "thresholds": {
+    "monitor": 20.0,
+    "step_up": 40.0,
+    "restrict": 65.0,
+    "block": 85.0
+  },
+  "adaptation": {
+    "budget_status": "calibrated by research/poisoning.py: 95th percentile of 357 consecutive-session drifts across the 51 CMU subjects, centre and scale separately",
+    "budget": 6.8837,
+    "scale_budget": 7.5446,
+    "tau_min": 0.5,
+    "buffer_capacity": 200,
+    "rebuild_every": 20,
+    "cold_start_sessions": 5,
+    "reanchor_days": 30.0
+  }
 }
