@@ -40,6 +40,21 @@ CHECKPOINTS: tuple[Checkpoint, ...] = ("login", "payee", "amount", "confirmation
 
 BEHAVIOURAL_CHANNELS: frozenset[str] = frozenset({"behaviour", "automation"})
 
+# What the response workflow does with a confirmed transfer, per action. Policy, not configuration:
+# the workflow routes on this value and holds no mapping of its own.
+Response = Literal["release", "step_up", "review", "cancel"]
+RESPONSES: Mapping[Action, Response] = {
+    "allow": "release",
+    "monitor": "release",
+    "step_up": "step_up",
+    "restrict": "review",
+    "block": "cancel",
+}
+
+
+def response_for(action: Action) -> Response:
+    return RESPONSES[action]
+
 TOP_CONTRIBUTIONS = 3
 
 

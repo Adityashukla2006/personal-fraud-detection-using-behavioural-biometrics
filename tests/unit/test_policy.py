@@ -10,7 +10,16 @@ from __future__ import annotations
 import pytest
 
 from fraudcore.fusion import Contribution, Fusion, FusionModel
-from fraudcore.policy import Checkpoint, Thresholds, alerting_channels, decide, fail_open
+from fraudcore.policy import (
+    ACTIONS,
+    RESPONSES,
+    Checkpoint,
+    Thresholds,
+    alerting_channels,
+    decide,
+    fail_open,
+    response_for,
+)
 from fraudcore.scoring import CHANNELS
 
 MODEL = FusionModel.from_dict(
@@ -152,3 +161,28 @@ class TestFailOpen:
         assert decision.confidence == 0.0
         assert decision.risk is None
         assert decision.constraints == ("fail_open",)
+
+    def test_a_fail_open_transfer_is_released_not_held(self) -> None:
+        # Fail open must hold for the money too: a database blip never freezes a transfer.
+        assert response_for(fail_open().action) == "release"
+
+
+class TestResponses:
+    def test_every_action_has_exactly_one_response(self) -> None:
+        assert set(RESPONSES) == set(ACTIONS)
+
+    @pytest.mark.parametrize(
+        ("action", "expected"),
+        [
+            ("allow", "release"),
+            ("monitor", "release"),
+            ("step_up", "step_up"),
+            ("restrict", "review"),
+            ("block", "cancel"),
+        ],
+    )
+    def test_the_mapping(self, action: str, expected: str) -> None:
+        assert response_for(action) == expected  # type: ignore[arg-type]
+
+    def test_only_allow_and_monitor_release_without_a_hold(self) -> None:
+        assert {a for a, r in RESPONSES.items() if r == "release"} == {"allow", "monitor"}
