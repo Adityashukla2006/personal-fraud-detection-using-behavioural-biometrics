@@ -206,13 +206,14 @@ Single DynamoDB table, on-demand capacity, one GSI.
 
 | Entity | PK | SK | Key attributes |
 |---|---|---|---|
-| Profile | `USER#<uid>` | `PROFILE#<deviceclass>` | `mu[12]`, `sigma[12]`, `anchor_mu[12]`, `anchor_sigma[12]`, `anchor_at`, `budget_used`, `n_sessions`, `version` |
+| Profile | `USER#<uid>` | `PROFILE#<deviceclass>` | `features[12]`, `mu[12]`, `sigma[12]`, `anchor_mu[12]`, `anchor_sigma[12]`, `anchor_at`, `budget_used`, `n_sessions`, `version` |
 | Trusted buffer | `USER#<uid>` | `BUF#<deviceclass>#<ts>` | `features[12]`, `trust`, `verified`, TTL 180 days |
-| Device | `USER#<uid>` | `DEV#<fingerprint>` | `first_seen`, `session_count`, `passkey_bound`, `device_class` |
+| Device | `USER#<uid>` | `DEV#<device_id>` | `first_seen`, `session_count`, `passkey_bound`, `device_class` |
+| Account | `USER#<uid>` | `ACCOUNT` | `session_count`, `credential_changed_at`, `contact_changed_at` |
 | User-payee edge | `USER#<uid>` | `PAYEE#<pid>` | `first_seen`, `verified_at`, `txn_count`, `cum_amount`, `mean_identity_score`, `interval_cv` |
 | Global payee risk | `PAYEE#<pid>` | `RISK` | `distinct_senders_7d`, `distinct_senders_30d`, `new_sender_fraction`, `fanin_fanout_ratio`, `risk_score`, `computed_at` |
 | User aggregates | `AGG#<uid>` | `WINDOW#<window>` | `amount_p50`, `amount_p95`, `daily_count_p95`, `history_count`, `new_payee_volume_30d`, `hour_histogram`, `computed_at` |
-| Session | `SESS#<sid>` | `META` | checkpoint features, running scores, TTL 1 day |
+| Session | `SESS#<sid>` | `META` | `uid`, keystroke timing fields so far, TTL 1 day |
 | Decision | `DEC#<did>` | `META` | scores, confidences, contributions, action, TTL 30 days |
 
 GSI1: `GSI1PK = USER#<uid>`, `GSI1SK = TS#<iso8601>` over decision items, for chronological per-user queries during evaluation and demos.
