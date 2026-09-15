@@ -310,7 +310,7 @@ Re-anchoring refreshes the budget and occurs when a session arrives with `tau = 
 
 `budget_saturated` is itself a detector. A genuine user drifting naturally rarely saturates the budget; a poisoning attacker saturates it every epoch by construction, because moving as fast as policy permits is their objective.
 
-`sigma` is bounded the same way as `mu`. Inflating the scale is an evasion: a wide enough variance makes everything look normal and neutralises a budget that only constrains the mean.
+`sigma` is bounded too, by its own budget `B_sigma` on the mean relative change of the scale, calibrated the same way from genuine drift. Inflating the scale is an evasion: a wide enough variance makes everything look normal and neutralises a budget that only constrains the mean. The two cannot share one budget, because centre displacement is a distance in scaled units and scale displacement is a relative change; the first poisoning run used one number for both, and that run is kept in `research/results` as the record.
 
 ### 7.7 Cold start
 
