@@ -152,11 +152,11 @@ Two choices deserve emphasis.
 
 1. Client POSTs a checkpoint event with a Cognito JWT. API Gateway validates the token and applies per-user throttling.
 2. Lambda validates payload shape, rejects implausible timing (negative deltas, impossible hold durations), derives the device class.
-3. One `BatchGetItem` retrieves profile, device, user-payee edge, global payee risk and user aggregate items. Typically under 10 ms.
+3. One `BatchGetItem` retrieves profile, device, user-payee edge, global payee risk, user aggregate and replay history items. Typically under 10 ms.
 4. Feature extraction: 12 keystroke timing features; automation features (coefficient of variation of inter-key intervals, rolling-hash duplicate detection); transaction features (amount relative to the user's own distribution, hour, velocity); context features (device familiarity, days since credential or contact change); payee features (payee age, verification status, cumulative sent, global fan-in risk).
 5. Four channel scores, each with a confidence.
 6. Fusion into 0 to 100, top three contributions with sign and magnitude, overall confidence, action.
-7. Write the decision item (TTL 30 days), publish a decision event, return. At the confirmation checkpoint, start the response workflow asynchronously for every transfer and return immediately rather than waiting on it. Allowed transfers pass straight through to release; the rest wait on step-up or review, or are cancelled. Routing every transfer through the workflow leaves one path to the ledger, so "money moves only on release" is enforced in one place instead of two.
+7. Write the decision item (TTL 30 days), publish a decision event, return. At the confirmation checkpoint, append the whole session's timing shingles to the user's replay history, then start the response workflow asynchronously for every transfer and return immediately rather than waiting on it. Allowed transfers pass straight through to release; the rest wait on step-up or review, or are cancelled. Routing every transfer through the workflow leaves one path to the ledger, so "money moves only on release" is enforced in one place instead of two.
 
 Targets: p50 under 60 ms, p95 under 200 ms end to end, warm. Cold starts are reported separately and honestly, expected at 300 to 600 ms without numpy. X-Ray segments separate API Gateway, Lambda init, DynamoDB read, compute and write, because latency is a reported result and a single number is not a result.
 
@@ -215,13 +215,14 @@ Single DynamoDB table, on-demand capacity, one GSI.
 | User aggregates | `AGG#<uid>` | `WINDOW#<window>` | `amount_p50`, `amount_p95`, `daily_count_p95`, `history_count`, `new_payee_volume_30d`, `hour_histogram`, `computed_at` |
 | Session | `SESS#<sid>` | `META` | `uid`, keystroke timing fields so far, TTL 1 day |
 | Decision | `DEC#<did>` | `META` | scores, confidences, contributions, action, TTL 30 days |
+| Replay history | `REPLAY#<uid>` | `HISTORY` | `sessions` (shingle hashes of the last 50 confirmed sessions), `version`, TTL 90 days |
 | Verified step-up | `USER#<uid>` | `VERIFIED#<decision_id>` | `transfer_id`, `method`, `verified_at`, `received_at`, TTL 180 days |
 | Ledger balance | `LEDGER#<uid>` | `BALANCE` | `balance`, `opening` |
 | Ledger transfer | `LEDGER#<uid>` | `TXN#<transfer_id>` | `status`, `amount`, `payee_id`, `decision_id`, `action`, `reason`, `task_token` while held |
 
 GSI1: `GSI1PK = USER#<uid>`, `GSI1SK = TS#<iso8601>` over decision items, for chronological per-user queries during evaluation and demos.
 
-Notes. User aggregates have their own partition rather than living under `USER#<uid>`. IAM can scope DynamoDB access by partition key but not by sort key, so a shared partition would force the aggregator's role to write `USER#` items, and nothing but convention would stop it overwriting a profile. With a separate partition, "the adaptation role is the only writer of profile items" is enforced by IAM. The buffer is stored as separate items rather than a list inside the profile, so eviction is a TTL rather than a read-modify-write. `version` supports optimistic concurrency on profile updates. Anchor values are stored alongside current values because the budget in section 7 is defined relative to the anchor, not the previous state.
+Notes. User aggregates have their own partition rather than living under `USER#<uid>`. IAM can scope DynamoDB access by partition key but not by sort key, so a shared partition would force the aggregator's role to write `USER#` items, and nothing but convention would stop it overwriting a profile. With a separate partition, "the adaptation role is the only writer of profile items" is enforced by IAM. The buffer is stored as separate items rather than a list inside the profile, so eviction is a TTL rather than a read-modify-write. `version` supports optimistic concurrency on profile updates. Replay history has its own partition for the same IAM reason: scoring writes it, and must still never be able to write `USER#`. Only confirmed sessions are remembered, so a session cannot match its own earlier checkpoints, and the hashes describe rhythm only, never a key. Anchor values are stored alongside current values because the budget in section 7 is defined relative to the anchor, not the previous state.
 
 ---
 
@@ -358,6 +359,8 @@ z_i  = c_i * standardise(s_i)      # unknown channel: c_i = 0, so z_i = 0
 L    = w_0 + sum_i w_i * z_i
 risk = 100 * sigmoid(L)
 ```
+
+Fitting (`research/fit_fusion.py`, Tier 2). Sessions are assembled exactly as the live store assembles them: CMU typing for the behavioural and automation channels, the simulator's frozen attack classes for everything else. The first 10 CMU subjects are the live simulator's victims and are excluded; 28 subjects fit and 13 evaluate. Each channel is standardised by its mean and deviation over genuine training sessions, then a class-balanced logistic regression with non-negative weights is fitted, since a channel whose anomaly lowered risk would be a modelling error, not a finding. Thresholds are the 80th, 95th, 99th and 99.9th percentiles of genuine training risk. On the held-out subjects, genuine friction fell from 10.3% under the placeholder weights to 7.7%, with takeover, bot and replay still detected in every session. The non-behavioural channels are constant on genuine simulator sessions, so their deviations sit at the floor and any anomaly saturates at `z_limit`; that is a property of the simulator, and is why these weights are Tier 2.
 
 Confidence is evidence sufficiency, not certainty of guilt: keystrokes captured, buffer size, payee-risk staleness, device history length. Shrinking toward zero makes an uninformative channel pull toward the base rate rather than in a random direction.
 
