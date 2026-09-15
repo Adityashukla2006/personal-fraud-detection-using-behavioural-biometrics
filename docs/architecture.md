@@ -86,7 +86,7 @@ flowchart TB
     AGW --> SCORE
     SCORE <-->|BatchGetItem| DDB
     SCORE -->|decision event| EB
-    SCORE -->|risk >= medium| SFN
+    SCORE -->|every confirmed transfer| SFN
 
     SFN --> COG
     SFN --> SNS
@@ -156,7 +156,7 @@ Two choices deserve emphasis.
 4. Feature extraction: 12 keystroke timing features; automation features (coefficient of variation of inter-key intervals, rolling-hash duplicate detection); transaction features (amount relative to the user's own distribution, hour, velocity); context features (device familiarity, days since credential or contact change); payee features (payee age, verification status, cumulative sent, global fan-in risk).
 5. Four channel scores, each with a confidence.
 6. Fusion into 0 to 100, top three contributions with sign and magnitude, overall confidence, action.
-7. Write the decision item (TTL 30 days), publish a decision event, return. If the action exceeds allow, start the response workflow asynchronously and return immediately rather than waiting on it.
+7. Write the decision item (TTL 30 days), publish a decision event, return. At the confirmation checkpoint, start the response workflow asynchronously for every transfer and return immediately rather than waiting on it. Allowed transfers pass straight through to release; the rest wait on step-up or review, or are cancelled. Routing every transfer through the workflow leaves one path to the ledger, so "money moves only on release" is enforced in one place instead of two.
 
 Targets: p50 under 60 ms, p95 under 200 ms end to end, warm. Cold starts are reported separately and honestly, expected at 300 to 600 ms without numpy. X-Ray segments separate API Gateway, Lambda init, DynamoDB read, compute and write, because latency is a reported result and a single number is not a result.
 
@@ -215,6 +215,9 @@ Single DynamoDB table, on-demand capacity, one GSI.
 | User aggregates | `AGG#<uid>` | `WINDOW#<window>` | `amount_p50`, `amount_p95`, `daily_count_p95`, `history_count`, `new_payee_volume_30d`, `hour_histogram`, `computed_at` |
 | Session | `SESS#<sid>` | `META` | `uid`, keystroke timing fields so far, TTL 1 day |
 | Decision | `DEC#<did>` | `META` | scores, confidences, contributions, action, TTL 30 days |
+| Verified step-up | `USER#<uid>` | `VERIFIED#<decision_id>` | `transfer_id`, `method`, `verified_at`, `received_at`, TTL 180 days |
+| Ledger balance | `LEDGER#<uid>` | `BALANCE` | `balance`, `opening` |
+| Ledger transfer | `LEDGER#<uid>` | `TXN#<transfer_id>` | `status`, `amount`, `payee_id`, `decision_id`, `action`, `reason`, `task_token` while held |
 
 GSI1: `GSI1PK = USER#<uid>`, `GSI1SK = TS#<iso8601>` over decision items, for chronological per-user queries during evaluation and demos.
 
