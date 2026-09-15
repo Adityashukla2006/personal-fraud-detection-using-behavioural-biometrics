@@ -138,6 +138,52 @@ def test_the_timing_payload_carries_no_content_fields() -> None:
     assert fields == {"hold", "down_down", "up_down", "backspaces", "corrections", "pastes"}
 
 
+class TestIntervalCv:
+    def test_cv_matches_the_hand_computed_value(self) -> None:
+        # down-down 0.5, 0.6: mean 0.55, sample std sqrt(2 * 0.05^2) = 0.0707107
+        assert features.interval_cv(TIMING) == pytest.approx((2 * 0.05**2) ** 0.5 / 0.55)
+
+    def test_perfectly_regular_intervals_have_zero_cv(self) -> None:
+        regular = dataclasses.replace(TIMING, down_down=(0.1, 0.1))
+        assert features.interval_cv(regular) == 0.0
+
+    def test_all_zero_intervals_report_zero_not_a_division_error(self) -> None:
+        assert features.interval_cv(dataclasses.replace(TIMING, down_down=(0.0, 0.0))) == 0.0
+
+
+class TestTimingShingles:
+    # Five symbols: holds and down-downs interleaved, 0.1 0.5 0.2 0.6 0.3, i.e. 100 500 200 600 300
+    # at 1 ms resolution.
+    def test_a_single_window_hash_matches_the_hand_computed_polynomial(self) -> None:
+        base = features._HASH_BASE
+        expected = (((100 * base + 500) * base + 200) * base + 600) * base + 300
+        assert features.timing_shingles(TIMING, window=5) == {expected % features._HASH_MODULUS}
+
+    def test_rolling_matches_hashing_each_window_from_scratch(self) -> None:
+        rolled = features.timing_shingles(TIMING, window=2)
+        base, modulus = features._HASH_BASE, features._HASH_MODULUS
+        pairs = [(100, 500), (500, 200), (200, 600), (600, 300)]
+        assert rolled == {(a * base + b) % modulus for a, b in pairs}
+
+    def test_an_entry_exactly_one_window_long_yields_one_shingle(self) -> None:
+        assert len(features.timing_shingles(TIMING, window=5)) == 1
+
+    def test_an_entry_shorter_than_the_window_yields_none(self) -> None:
+        assert features.timing_shingles(TIMING, window=6) == frozenset()
+
+    def test_sub_resolution_differences_hash_identically(self) -> None:
+        jittered = dataclasses.replace(TIMING, hold=(0.1002, 0.2, 0.3))
+        assert features.timing_shingles(jittered, window=5) == features.timing_shingles(
+            TIMING, window=5
+        )
+
+    def test_invalid_parameters_are_rejected(self) -> None:
+        with pytest.raises(ValueError, match="window"):
+            features.timing_shingles(TIMING, window=0)
+        with pytest.raises(ValueError, match="resolution"):
+            features.timing_shingles(TIMING, resolution=0.0)
+
+
 def test_vector_orders_by_the_requested_names(extracted: dict[str, float]) -> None:
     assert features.vector(extracted, ["paste_count", "mean_hold"]) == pytest.approx([1.0, 0.2])
 

@@ -168,6 +168,71 @@ def extract(timing: KeystrokeTiming) -> dict[str, float]:
     }
 
 
+def interval_cv(timing: KeystrokeTiming) -> float:
+    """Coefficient of variation of the down-down intervals.
+
+    Humans are irregular: consecutive presses vary by tens of percent. A script with a fixed or
+    lightly jittered delay is not, so a CV near zero is the automation signature. All-zero
+    intervals are perfectly regular and report zero rather than dividing by zero.
+    """
+    mean = _mean(timing.down_down)
+    if mean <= 0:
+        return 0.0
+    return _sample_std(timing.down_down) / mean
+
+
+# Replay detection quantises timings to this resolution before hashing. At 1 ms an exact replay of
+# recorded events matches and a human re-typing does not. A replay injected with scheduler jitter
+# above the resolution evades it; that is a stated limit, and the reason regularity is scored too.
+REPLAY_RESOLUTION_SECONDS = 0.001
+
+# Consecutive quantised timings per shingle. Long enough that a human repeating a rhythm will not
+# collide by chance, short enough that splicing a recorded fragment into a new entry still matches.
+REPLAY_WINDOW = 6
+
+# Polynomial rolling hash. The hashes are persisted and compared across processes, so Python's
+# built-in hash is unusable; this is explicit and stable.
+_HASH_BASE = 1_000_003
+_HASH_MODULUS = (1 << 61) - 1
+
+
+def timing_shingles(
+    timing: KeystrokeTiming,
+    window: int = REPLAY_WINDOW,
+    resolution: float = REPLAY_RESOLUTION_SECONDS,
+) -> frozenset[int]:
+    """Return rolling hashes of every ``window`` consecutive quantised timings.
+
+    The sequence interleaves holds and down-down intervals in keystroke order, so it describes the
+    rhythm completely without describing a single key. An entry shorter than ``window`` yields no
+    shingles, which the automation channel reports as no replay evidence.
+    """
+    if window < 1:
+        raise ValueError("window must be at least 1")
+    if resolution <= 0:
+        raise ValueError("resolution must be positive")
+
+    symbols: list[int] = []
+    for index, hold in enumerate(timing.hold):
+        symbols.append(round(hold / resolution))
+        if index < len(timing.down_down):
+            symbols.append(round(timing.down_down[index] / resolution))
+
+    if len(symbols) < window:
+        return frozenset()
+
+    leading = pow(_HASH_BASE, window - 1, _HASH_MODULUS)
+    current = 0
+    for symbol in symbols[:window]:
+        current = (current * _HASH_BASE + symbol) % _HASH_MODULUS
+
+    shingles = {current}
+    for outgoing, incoming in zip(symbols, symbols[window:], strict=False):
+        current = ((current - outgoing * leading) * _HASH_BASE + incoming) % _HASH_MODULUS
+        shingles.add(current)
+    return frozenset(shingles)
+
+
 def vector(features: dict[str, float], names: Sequence[str] = FEATURE_NAMES) -> list[float]:
     """Order a feature mapping into the vector a ``ReferenceProfile`` expects."""
     return [features[name] for name in names]

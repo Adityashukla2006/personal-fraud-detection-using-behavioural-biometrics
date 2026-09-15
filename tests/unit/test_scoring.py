@@ -11,7 +11,15 @@ from __future__ import annotations
 
 import pytest
 
-from fraudcore.scoring import DISPERSION_FLOOR, DeviceProfiles, ReferenceProfile
+from fraudcore import scoring
+from fraudcore.features import KeystrokeTiming, timing_shingles
+from fraudcore.scoring import (
+    DISPERSION_FLOOR,
+    NO_EVIDENCE,
+    ChannelScore,
+    DeviceProfiles,
+    ReferenceProfile,
+)
 
 # Chosen so that every statistic is exact in decimal and can be verified by hand.
 #
@@ -144,3 +152,100 @@ class TestDeviceProfiles:
         assert profiles.profile_for("mobile") is None
         with pytest.raises(TypeError):
             profiles.by_class["mobile"] = profile  # type: ignore[index]
+
+
+class TestChannelScore:
+    def test_confidence_bounds_are_inclusive(self) -> None:
+        ChannelScore(1.0, 0.0)
+        ChannelScore(1.0, 1.0)
+        with pytest.raises(ValueError, match="outside"):
+            ChannelScore(1.0, 1.0001)
+
+    def test_a_non_finite_score_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="finite"):
+            ChannelScore(float("inf"), 0.5)
+
+
+class TestBehaviourChannel:
+    FEATURES = {"spread": 6.0, "flat": 10.0005, "unused": 99.0}
+
+    def test_no_profile_is_no_evidence_rather_than_an_anomaly(self) -> None:
+        assert scoring.behaviour_channel(None, self.FEATURES, 40, 5) == NO_EVIDENCE
+
+    def test_full_evidence_reports_the_profile_score_at_full_confidence(
+        self, profile: ReferenceProfile
+    ) -> None:
+        result = scoring.behaviour_channel(
+            profile,
+            self.FEATURES,
+            scoring.IDENTITY_FULL_KEYSTROKES,
+            scoring.IDENTITY_FULL_SESSIONS,
+        )
+        assert result.score == pytest.approx(7.25)
+        assert result.confidence == 1.0
+
+    def test_confidence_multiplies_keystroke_and_session_sufficiency(
+        self, profile: ReferenceProfile
+    ) -> None:
+        # 10 of 40 keystrokes, 4 of 5 sessions: 0.25 * 0.8
+        result = scoring.behaviour_channel(profile, self.FEATURES, 10, 4)
+        assert result.confidence == pytest.approx(0.2)
+
+    def test_a_profile_one_session_short_of_cold_start_is_not_fully_trusted(
+        self, profile: ReferenceProfile
+    ) -> None:
+        short = scoring.behaviour_channel(
+            profile, self.FEATURES, 1000, scoring.IDENTITY_FULL_SESSIONS - 1
+        )
+        assert short.confidence < 1.0
+
+
+def _timing(down_down: tuple[float, ...]) -> KeystrokeTiming:
+    count = len(down_down) + 1
+    return KeystrokeTiming(
+        hold=(0.1,) * count,
+        down_down=down_down,
+        up_down=tuple(value - 0.1 for value in down_down),
+    )
+
+
+class TestAutomationChannel:
+    def test_a_fixed_delay_script_scores_maximum_regularity(self) -> None:
+        assert scoring.automation_channel(_timing((0.12,) * 15)).score == pytest.approx(1.0)
+
+    def test_regularity_matches_the_hand_computed_value(self) -> None:
+        # down-down 0.5, 0.6: CV 0.1285649; regularity (0.2 - CV) / 0.2
+        cv = (2 * 0.05**2) ** 0.5 / 0.55
+        result = scoring.automation_channel(_timing((0.5, 0.6)))
+        assert result.score == pytest.approx((0.2 - cv) / 0.2)
+
+    def test_a_cv_exactly_at_the_human_floor_scores_zero(self) -> None:
+        # Two intervals m - d and m + d have sample CV d * sqrt(2) / m, so d = 0.2 * m / sqrt(2).
+        spread = scoring.AUTOMATION_HUMAN_CV * 0.5 / 2**0.5
+        timing = _timing((0.5 - spread, 0.5 + spread))
+        assert scoring.automation_channel(timing).score == pytest.approx(0.0, abs=1e-12)
+
+    def test_irregular_human_timing_scores_zero(self) -> None:
+        assert scoring.automation_channel(_timing((0.2, 0.6, 0.3, 0.9))).score == 0.0
+
+    def test_an_exact_replay_scores_full_overlap(self) -> None:
+        human = _timing((0.2, 0.6, 0.3, 0.9, 0.25))
+        history = timing_shingles(human)
+        assert scoring.automation_channel(human, history).score == 1.0
+
+    def test_partial_overlap_is_the_fraction_of_shingles_seen(self) -> None:
+        human = _timing((0.2, 0.6, 0.3, 0.9, 0.25))
+        shingles = sorted(timing_shingles(human))
+        history = frozenset(shingles[:2])
+        expected = 2 / len(shingles)
+        assert scoring.automation_channel(human, history).score == pytest.approx(expected)
+
+    def test_unreadable_history_scores_regularity_only(self) -> None:
+        human = _timing((0.2, 0.6, 0.3, 0.9, 0.25))
+        assert scoring.automation_channel(human, None).score == 0.0
+
+    def test_confidence_saturates_at_the_full_interval_count(self) -> None:
+        full = scoring.AUTOMATION_FULL_INTERVALS
+        assert scoring.automation_channel(_timing((0.12,) * full)).confidence == 1.0
+        short = scoring.automation_channel(_timing((0.12,) * 3))
+        assert short.confidence == pytest.approx(3 / full)

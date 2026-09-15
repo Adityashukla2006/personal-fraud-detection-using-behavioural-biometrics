@@ -35,12 +35,19 @@ desensitise that feature for every session afterwards.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Literal
 
-from fraudcore.features import DEVICE_CLASSES, DeviceClass
+from fraudcore.features import (
+    DEVICE_CLASSES,
+    DeviceClass,
+    KeystrokeTiming,
+    interval_cv,
+    timing_shingles,
+)
 
 Scaling = Literal["mad", "std"]
 
@@ -190,3 +197,96 @@ class DeviceProfiles:
         """Score against this device class's profile, or ``None`` if the class has none yet."""
         profile = self.profile_for(device_class)
         return None if profile is None else profile.score(session)
+
+
+# ---------------------------------------------------------------------------------------------
+# Channel scorers
+#
+# Every channel reports a raw score, higher meaning riskier, and a confidence in [0, 1] saying how
+# much evidence stands behind it. Confidence is evidence sufficiency, never certainty of guilt:
+# fusion multiplies it into the standardised score, so a channel with no evidence pulls towards the
+# base rate instead of in an arbitrary direction (architecture section 8.1).
+# ---------------------------------------------------------------------------------------------
+
+CHANNELS: tuple[str, ...] = ("behaviour", "automation", "transaction", "context", "payee")
+
+
+@dataclass(frozen=True)
+class ChannelScore:
+    score: float
+    confidence: float
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.score):
+            raise ValueError("channel score must be finite")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError(f"confidence {self.confidence} is outside [0, 1]")
+
+
+NO_EVIDENCE = ChannelScore(score=0.0, confidence=0.0)
+
+
+def _saturating(amount: float, full: float) -> float:
+    """Linear ramp from 0 at no evidence to 1 at ``full``, clamped."""
+    return min(1.0, max(0.0, amount / full))
+
+
+# The benchmark password is 11 keystrokes including Return; roughly four field entries of that
+# length is where the identity evidence stops being dominated by one short field.
+IDENTITY_FULL_KEYSTROKES = 40
+
+# Cold start, architecture section 7.7: a device-class profile is not trusted until it has been
+# built from five sessions.
+IDENTITY_FULL_SESSIONS = 5
+
+
+def behaviour_channel(
+    profile: ReferenceProfile | None,
+    features: Mapping[str, float],
+    keystrokes: int,
+    profile_sessions: int,
+) -> ChannelScore:
+    """Identity: scaled Manhattan distance from this device class's profile.
+
+    A missing profile is no evidence, not an anomaly. Confidence is the product of how much typing
+    was seen and how established the profile is, so a three-session profile cannot carry a
+    confident verdict however far the session sits from it.
+    """
+    if profile is None:
+        return NO_EVIDENCE
+    session = [features[name] for name in profile.feature_names]
+    confidence = _saturating(keystrokes, IDENTITY_FULL_KEYSTROKES) * _saturating(
+        profile_sessions, IDENTITY_FULL_SESSIONS
+    )
+    return ChannelScore(score=profile.score(session), confidence=confidence)
+
+
+# Human inter-key CV sits well above this; a fixed-delay script sits at zero. Regularity scores 1 at
+# zero CV and falls linearly to 0 here.
+AUTOMATION_HUMAN_CV = 0.2
+
+# Intervals needed before a CV is a stable statistic rather than an accident of a short field.
+AUTOMATION_FULL_INTERVALS = 15
+
+
+def automation_channel(
+    timing: KeystrokeTiming, replay_history: frozenset[int] | None = None
+) -> ChannelScore:
+    """Bot and replay: timing regularity, and overlap with previously seen timing shingles.
+
+    The score is the stronger of the two signals, each in [0, 1]: a bot needs only one of the two
+    tells to be caught. ``replay_history`` is the set of shingles from the user's recent sessions;
+    ``None`` means it could not be read, and only regularity is scored.
+    """
+    regularity = max(0.0, (AUTOMATION_HUMAN_CV - interval_cv(timing)) / AUTOMATION_HUMAN_CV)
+
+    replay = 0.0
+    if replay_history:
+        shingles = timing_shingles(timing)
+        if shingles:
+            replay = len(shingles & replay_history) / len(shingles)
+
+    return ChannelScore(
+        score=max(regularity, replay),
+        confidence=_saturating(len(timing.down_down), AUTOMATION_FULL_INTERVALS),
+    )
