@@ -93,10 +93,14 @@ class TestEdgeSignals:
         assert edge.identity == 0.0
         assert not edge.flagged
 
-    def test_an_established_payee_is_not_an_edge(self) -> None:
+    def test_an_established_payee_keeps_its_history_but_never_scores_as_siphoning(self) -> None:
         records = _siphoned(40.0, 20.0)
-        payees = {edge.payee_id for edge in edge_signals(records, NOW, None)}
-        assert payees == {"mule"}
+        edges = {edge.payee_id: edge for edge in edge_signals(records, NOW, None)}
+        assert set(edges) == {"mule", "known0", "known1", "known2"}
+        known = edges["known0"]
+        assert known.first_seen == pytest.approx(NOW - 60 * DAY)
+        assert (known.volume, known.regularity, known.band, known.identity) == (0.0, 0.0, 0.0, 0.0)
+        assert known.siphon_score == 0.0 and not known.flagged
 
     def test_regularity_and_band_need_three_transfers(self) -> None:
         records = [rec("u", "new", 900.0, 4), rec("u", "new", 900.0, 2)]

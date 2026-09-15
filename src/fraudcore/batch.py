@@ -178,7 +178,12 @@ class EdgeSignals:
 def edge_signals(
     records: Sequence[TransferRecord], now: float, aggregates: UserAggregates | None
 ) -> list[EdgeSignals]:
-    """Signals for every payee one user first paid within the new-payee window."""
+    """Signals for every payee one user has paid in the lookback window.
+
+    Only a payee first paid within the new-payee window can score as siphoning. An established one
+    is still returned, with every siphoning term zero, because its first transfer is how the fast
+    path ages payee novelty: nothing on the live path records a payee edge.
+    """
     history = sorted((r for r in records if r.at <= now), key=lambda r: r.at)
     if len({r.uid for r in history}) > 1:
         raise ValueError("edge signals are computed for one user at a time")
@@ -191,9 +196,8 @@ def edge_signals(
     signals = []
     for payee_id, sent in sorted(by_payee.items()):
         first_seen = sent[0].at
-        if now - first_seen > NEW_PAYEE_WINDOW_DAYS * SECONDS_PER_DAY:
-            continue
-        counted = len(sent) >= MIN_EDGE_TRANSFERS
+        recent = now - first_seen <= NEW_PAYEE_WINDOW_DAYS * SECONDS_PER_DAY
+        counted = recent and len(sent) >= MIN_EDGE_TRANSFERS
 
         interval_cv, regularity = None, 0.0
         gaps = [later.at - earlier.at for earlier, later in zip(sent, sent[1:], strict=False)]
@@ -213,7 +217,8 @@ def edge_signals(
             if r.payee_id != payee_id and r.identity_score is not None
         ]
         identity_gap, identity = None, 0.0
-        if len(on_edge) >= MIN_IDENTITY_SAMPLES and len(elsewhere) >= MIN_IDENTITY_SAMPLES:
+        enough = len(on_edge) >= MIN_IDENTITY_SAMPLES and len(elsewhere) >= MIN_IDENTITY_SAMPLES
+        if recent and enough:
             baseline = max(_mean(elsewhere), 1e-6)
             identity_gap = (_mean(on_edge) - baseline) / baseline
             identity = _clamp(
@@ -232,7 +237,7 @@ def edge_signals(
                 interval_cv=interval_cv,
                 band_fraction=band_fraction,
                 identity_gap=identity_gap,
-                volume=_clamp(cumulative / (VOLUME_SATURATION * reference)),
+                volume=_clamp(cumulative / (VOLUME_SATURATION * reference)) if recent else 0.0,
                 regularity=regularity,
                 band=band_fraction if counted else 0.0,
                 identity=identity,

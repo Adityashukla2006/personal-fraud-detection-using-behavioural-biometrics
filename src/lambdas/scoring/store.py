@@ -228,6 +228,13 @@ class Store:
                 hours_since_computed=_elapsed(item["computed_at"], now, SECONDS_PER_HOUR),
                 flagged=bool(item.get("flagged", False)),
             )
+            # Nothing on the live path writes a payee edge, so without a seeded one the batch
+            # layer's first transfer is how novelty ages. Verification stays a live-only fact.
+            if edge is None and "first_seen" in item:
+                edge = PayeeEdge(
+                    days_since_first_seen=_elapsed(item["first_seen"], now, SECONDS_PER_DAY),
+                    verified=False,
+                )
 
         aggregates = None
         if item := found["aggregates"]:

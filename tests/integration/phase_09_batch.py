@@ -97,7 +97,10 @@ def test_the_aggregator_flags_a_siphon_from_lake_history(
     assert edge["transfers"] == 5
     assert float(edge["identity"]) == pytest.approx(1.0)
 
-    assert history.item(f"AGG#{uid}", f"EDGE#{known}") == {}
+    # The established payee keeps its history for the fast path, and never scores as siphoning.
+    established = history.item(f"AGG#{uid}", f"EDGE#{known}")
+    assert established["flagged"] is False
+    assert float(established["siphon_score"]) == 0.0
     assert history.item(f"PAYEE#{mule}", "RISK")["flagged"] is True
     history.item(f"PAYEE#{known}", "RISK")
 

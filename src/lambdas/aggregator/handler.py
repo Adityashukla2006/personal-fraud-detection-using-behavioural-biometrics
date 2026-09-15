@@ -5,7 +5,7 @@ Athena query, hands them to ``fraudcore.batch``, and writes the results where th
 them by key:
 
     AGG#<uid> / WINDOW#30d     the user's rolling amount, count and hour statistics
-    AGG#<uid> / EDGE#<pid>     siphoning signals for a payee this user started paying recently
+    AGG#<uid> / EDGE#<pid>     this user's history with a payee, with siphoning signals if new
     PAYEE#<pid> / RISK         cross-user destination risk and the batch flag
 
 Every decision stays in fraudcore; this module only runs the query and translates rows and items.

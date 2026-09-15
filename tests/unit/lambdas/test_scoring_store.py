@@ -163,6 +163,28 @@ class TestLoad:
         assert state.edge_risk.hours_since_computed == pytest.approx(2.0)
         assert state.edge_risk.flagged
 
+    def test_the_batch_history_ages_novelty_when_no_live_edge_exists(self) -> None:
+        item = {
+            "PK": f"AGG#{UID}",
+            "SK": f"EDGE#{PAYEE}",
+            "siphon_score": Decimal("0"),
+            "first_seen": int(NOW) - 12 * 86_400,
+            "computed_at": int(NOW),
+        }
+        state = Store(FakeClient([item]), TABLE).load(UID, _request(transaction=True), NOW)
+        assert state.edge is not None
+        assert state.edge.days_since_first_seen == pytest.approx(12.0)
+        assert state.edge.verified is False
+
+    def test_a_live_edge_wins_over_batch_history(self) -> None:
+        live = {"PK": f"USER#{UID}", "SK": f"PAYEE#{PAYEE}", "first_seen": int(NOW) - 86_400,
+                "verified_at": int(NOW)}
+        batch = {"PK": f"AGG#{UID}", "SK": f"EDGE#{PAYEE}", "siphon_score": Decimal("0"),
+                 "first_seen": int(NOW) - 50 * 86_400, "computed_at": int(NOW)}
+        state = Store(FakeClient([live, batch]), TABLE).load(UID, _request(transaction=True), NOW)
+        assert state.edge.days_since_first_seen == pytest.approx(1.0)
+        assert state.edge.verified is True
+
     def test_no_transaction_reads_no_siphoning_signal(self) -> None:
         state = Store(FakeClient(), TABLE).load(UID, _request(), NOW)
         assert state.edge_risk is None
