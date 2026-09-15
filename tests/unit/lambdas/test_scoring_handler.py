@@ -72,6 +72,47 @@ class FakeStore:
             raise self.save_error
         self.decisions.append((uid, decision_id, decision))
 
+    def save_replay(
+        self, uid: str, state: ScoringState, fields: tuple[KeystrokeTiming, ...], now: float
+    ) -> None:
+        if self.save_error:
+            raise self.save_error
+        self.replays = [*getattr(self, "replays", []), (uid, fields)]
+
+
+class TestReplayHistory:
+    def test_a_confirmation_remembers_the_whole_session(self) -> None:
+        store = FakeStore(state=EMPTY.__class__(**{**EMPTY.__dict__, "session_fields": (PRIOR,)}))
+        _call(_event(_confirmation()), store)
+        [(uid, fields)] = store.replays
+        assert uid == "user-1"
+        assert len(fields) == 2 and fields[0] == PRIOR
+
+    def test_earlier_checkpoints_are_not_remembered(self) -> None:
+        store = FakeStore()
+        _call(_event(_payload()), store)
+        assert getattr(store, "replays", []) == []
+
+    def test_a_failed_read_remembers_nothing(self) -> None:
+        store = FakeStore(load_error=RuntimeError("dynamodb unavailable"))
+        _call(_event(_confirmation()), store)
+        assert getattr(store, "replays", []) == []
+
+    def test_the_replay_history_reaches_the_automation_channel(self) -> None:
+        # History holding exactly this request's shingles makes the entry a full replay.
+        from fraudcore.features import KeystrokeTiming as Timing
+        from scoring.store import session_shingles
+
+        entry = _payload()["behaviour"]["fields"][0]
+        timing = Timing(
+            tuple(entry["hold"]), tuple(entry["down_down"]), tuple(entry["up_down"])
+        )
+        history = (tuple(session_shingles((timing,))),)
+        replayed = EMPTY.__class__(**{**EMPTY.__dict__, "replay_sessions": history})
+        store = FakeStore(state=replayed)
+        _, body, _ = _call(_event(_payload()), store)
+        assert "automation" in {c["channel"] for c in body["contributions"]}
+
 
 def _payload(**overrides: Any) -> dict[str, Any]:
     hold = [0.09, 0.11, 0.08, 0.10, 0.12, 0.09]

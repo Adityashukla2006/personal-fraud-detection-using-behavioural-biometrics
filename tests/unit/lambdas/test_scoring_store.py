@@ -88,9 +88,70 @@ class TestLoad:
     def test_payee_items_are_only_requested_with_a_transaction(self) -> None:
         client = FakeClient()
         Store(client, TABLE).load(UID, _request(), NOW)
-        assert len(client.requested) == 5
+        assert len(client.requested) == 6
         Store(client, TABLE).load(UID, _request(transaction=True), NOW)
         assert (f"PAYEE#{PAYEE}", "RISK") in client.requested
+
+    def test_replay_history_is_the_union_of_remembered_sessions(self) -> None:
+        item = {
+            "PK": f"REPLAY#{UID}",
+            "SK": "HISTORY",
+            "sessions": [[Decimal(1), Decimal(2)], [Decimal(2), Decimal(3)]],
+            "version": 4,
+        }
+        state = Store(FakeClient([item]), TABLE).load(UID, _request(), NOW)
+        assert state.replay_history == frozenset({1, 2, 3})
+        assert state.replay_version == 4
+
+    def test_a_user_without_history_has_none(self) -> None:
+        state = Store(FakeClient(), TABLE).load(UID, _request(), NOW)
+        assert (state.replay_history, state.replay_version) == (frozenset(), None)
+
+    def test_a_remembered_session_is_appended_and_the_oldest_dropped(self) -> None:
+        import dataclasses
+
+        from fraudcore.features import timing_shingles
+        from scoring.store import REPLAY_SESSIONS
+
+        long_timing = KeystrokeTiming(
+            hold=(0.1, 0.12, 0.09, 0.11, 0.1, 0.13),
+            down_down=(0.3, 0.25, 0.4, 0.22, 0.35),
+            up_down=(0.2, 0.13, 0.31, 0.11, 0.25),
+        )
+        empty = Store(FakeClient(), TABLE).load(UID, _request(), NOW)
+        full = dataclasses.replace(
+            empty,
+            replay_sessions=tuple((index,) for index in range(REPLAY_SESSIONS)),
+            replay_version=7,
+        )
+        client = FakeClient()
+        Store(client, TABLE).save_replay(UID, full, (long_timing,), NOW)
+
+        put = client.puts[0]
+        item = _stored(put)
+        assert len(item["sessions"]) == REPLAY_SESSIONS
+        assert [int(v) for v in item["sessions"][0]] == [1]
+        assert [int(v) for v in item["sessions"][-1]] == sorted(timing_shingles(long_timing))
+        assert put["ConditionExpression"] == "version = :v"
+        assert put["ExpressionAttributeValues"] == {":v": {"N": "7"}}
+        assert item["version"] == 8
+
+    def test_the_first_remembered_session_creates_the_history(self) -> None:
+        long_timing = KeystrokeTiming(
+            hold=(0.1, 0.12, 0.09, 0.11, 0.1, 0.13),
+            down_down=(0.3, 0.25, 0.4, 0.22, 0.35),
+            up_down=(0.2, 0.13, 0.31, 0.11, 0.25),
+        )
+        client = FakeClient()
+        store = Store(client, TABLE)
+        store.save_replay(UID, store.load(UID, _request(), NOW), (long_timing,), NOW)
+        assert client.puts[-1]["ConditionExpression"] == "attribute_not_exists(PK)"
+
+    def test_a_session_too_short_to_shingle_writes_nothing(self) -> None:
+        client = FakeClient()
+        store = Store(client, TABLE)
+        store.save_replay(UID, store.load(UID, _request(), NOW), (TIMING,), NOW)
+        assert client.puts == []
 
     def test_every_item_decodes_into_fraudcore_types(self) -> None:
         items = [

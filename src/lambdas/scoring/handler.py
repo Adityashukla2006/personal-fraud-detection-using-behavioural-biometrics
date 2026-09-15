@@ -10,6 +10,10 @@ Fail open (CLAUDE.md section 2). A failure reading state, or any error while sco
 only responses that are not a decision are for requests that are malformed or not the caller's to
 make.
 
+Replay. A confirmed session's timing shingles join the user's replay history, and every later
+checkpoint is checked against that history. Only whole, confirmed sessions are remembered, so a
+session never matches its own earlier checkpoints.
+
 Latency is a reported result, so the response's Server-Timing header carries each stage's share:
 ``handler`` in total, then ``read``, ``score``, ``write``, ``publish`` and, at confirmation,
 ``workflow``. HTTP APIs do not support X-Ray, and a tracing SDK would be a runtime dependency, so
@@ -62,6 +66,10 @@ class StateStore(Protocol):
         now: float,
     ) -> None: ...
 
+    def save_replay(
+        self, uid: str, state: ScoringState, fields: tuple[KeystrokeTiming, ...], now: float
+    ) -> None: ...
+
 
 class TransferWorkflow(Protocol):
     def start(
@@ -97,8 +105,6 @@ TRANSFER_STATUS: dict[str, str] = {
     "cancel": "blocked",
 }
 
-_dependencies: Dependencies | None = None
-
 
 class Timings:
     """Milliseconds spent in each stage of one request, in the order they ran."""
@@ -122,24 +128,34 @@ class Timings:
         return ", ".join(parts)
 
 
+def _build() -> Dependencies:
+    import boto3
+
+    return Dependencies(
+        store=Store(boto3.client("dynamodb"), os.environ["TABLE_NAME"]),
+        model=FusionModel.load(),
+        thresholds=Thresholds.load(),
+        workflow=Workflow(
+            boto3.client("stepfunctions"),
+            os.environ["STATE_MACHINE_ARN"],
+            int(os.environ["STEP_UP_TIMEOUT_SECONDS"]),
+            int(os.environ["REVIEW_TIMEOUT_SECONDS"]),
+        ),
+        events=Publisher(boto3.client("events"), os.environ["EVENT_BUS_NAME"]),
+    )
+
+
+# Built during the Lambda init phase when running in Lambda, so creating clients and loading the
+# model is paid before the first request rather than inside it. Importing this module elsewhere, in
+# tests for instance, builds nothing and needs no AWS.
+_IN_LAMBDA = bool(os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
+_dependencies: Dependencies | None = _build() if _IN_LAMBDA else None
+
+
 def lambda_handler(event: Mapping[str, Any], context: Any) -> dict[str, Any]:
     global _dependencies
     if _dependencies is None:
-        # Built once per execution environment, so warm invocations pay nothing for it.
-        import boto3
-
-        _dependencies = Dependencies(
-            store=Store(boto3.client("dynamodb"), os.environ["TABLE_NAME"]),
-            model=FusionModel.load(),
-            thresholds=Thresholds.load(),
-            workflow=Workflow(
-                boto3.client("stepfunctions"),
-                os.environ["STATE_MACHINE_ARN"],
-                int(os.environ["STEP_UP_TIMEOUT_SECONDS"]),
-                int(os.environ["REVIEW_TIMEOUT_SECONDS"]),
-            ),
-            events=Publisher(boto3.client("events"), os.environ["EVENT_BUS_NAME"]),
-        )
+        _dependencies = _build()
     return handle(event, _dependencies)
 
 
@@ -159,12 +175,11 @@ def handle(event: Mapping[str, Any], deps: Dependencies) -> dict[str, Any]:
     decision_id = deps.new_id()
     scores: Mapping[str, ChannelScore] = {}
     fields = request.fields
-    loaded = False
+    state: ScoringState | None = None
 
     try:
         with timings.stage("read"):
             state = deps.store.load(uid, request, now)
-        loaded = True
         with timings.stage("score"):
             fields = (state.session_fields + request.fields)[-SESSION_MAX_FIELDS:]
             scored = score_session(
@@ -184,9 +199,11 @@ def handle(event: Mapping[str, Any], deps: Dependencies) -> dict[str, Any]:
         with timings.stage("write"):
             # Without the earlier fields a session write would erase them, so it is skipped when
             # the read failed. The decision is always recorded.
-            if loaded:
+            if state is not None:
                 deps.store.save_session(uid, request.session_id, fields, now)
             deps.store.save_decision(uid, decision_id, request, scores, decision, now)
+            if state is not None and request.checkpoint == "confirmation":
+                deps.store.save_replay(uid, state, fields, now)
     except Exception:
         LOGGER.exception("write failed, returning the decision anyway")
 
@@ -276,6 +293,7 @@ def _evidence(
         aggregates=state.aggregates,
         edge=state.edge,
         risk=state.risk,
+        replay_history=state.replay_history,
     )
 
 

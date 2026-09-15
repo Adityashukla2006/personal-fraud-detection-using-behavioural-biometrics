@@ -182,6 +182,36 @@ def test_a_content_field_is_refused(
     assert "unexpected keys" in body["error"]
 
 
+def test_a_replayed_session_is_recognised(
+    aws: boto3.Session,
+    outputs: dict[str, Any],
+    user: dict[str, str],
+    test_key: str,
+    cleanup: list[str],
+) -> None:
+    """A confirmed session joins the replay history, and a later exact copy of it is flagged."""
+    url = f"{outputs['api_url']}/score"
+    table = aws.resource("dynamodb").Table(outputs["table_name"])
+    original, copy = f"{test_key}a", f"{test_key}b"
+    cleanup.extend([f"SESS#{original}", f"SESS#{copy}"])
+    transfer = {"payee_id": hashlib.sha256(test_key.encode()).hexdigest(), "amount": 20}
+    try:
+        status, first = post(
+            url, _payload(original, "confirmation", transaction=transfer), user["token"]
+        )
+        assert status == 200, first
+        cleanup.append(f"DEC#{first['decision_id']}")
+
+        status, second = post(url, _payload(copy), user["token"])
+        assert status == 200, second
+        cleanup.append(f"DEC#{second['decision_id']}")
+
+        decision = _item(aws, outputs, f"DEC#{second['decision_id']}")
+        assert decision["scores"]["automation"]["score"] == 1
+    finally:
+        table.delete_item(Key={"PK": f"REPLAY#{user['sub']}", "SK": "HISTORY"})
+
+
 def test_the_client_is_served_with_live_configuration(outputs: dict[str, Any]) -> None:
     with urllib.request.urlopen(outputs["client_url"], timeout=15) as response:
         assert response.status == 200

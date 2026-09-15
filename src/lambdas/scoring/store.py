@@ -1,7 +1,11 @@
-"""DynamoDB access for the scoring path: one BatchGetItem in, two PutItems out.
+"""DynamoDB access for the scoring path: one BatchGetItem in, a few PutItems out.
 
 Item shapes follow architecture section 6. This module only translates between DynamoDB items and
 fraudcore types; no scoring decision is made here.
+
+Replay history lives in its own partition, ``REPLAY#<uid> / HISTORY``: the timing shingles of the
+user's most recent confirmed sessions. It is scoring's own data, so the scoring role writes it
+without ever gaining write access to the ``USER#`` partition that holds profiles.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from fraudcore.features import (
     PayeeRisk,
     SessionContext,
     UserAggregates,
+    timing_shingles,
 )
 from fraudcore.policy import Decision
 from fraudcore.scoring import DISPERSION_FLOOR, ChannelScore, ReferenceProfile
@@ -30,10 +35,15 @@ SECONDS_PER_HOUR = 3_600
 SECONDS_PER_DAY = 86_400
 SESSION_TTL_SECONDS = SECONDS_PER_DAY
 DECISION_TTL_SECONDS = 30 * SECONDS_PER_DAY
+REPLAY_TTL_SECONDS = 90 * SECONDS_PER_DAY
 AGGREGATE_WINDOW = "30d"
 
 # Oldest fields are dropped beyond this, keeping a session item far below DynamoDB's 400 KB limit.
 SESSION_MAX_FIELDS = 24
+
+# Confirmed sessions remembered for replay detection. At about 64 shingles a session this keeps the
+# history item well under 100 KB.
+REPLAY_SESSIONS = 50
 
 _serializer = TypeSerializer()
 _deserializer = TypeDeserializer()
@@ -56,6 +66,17 @@ class ScoringState:
     risk: PayeeRisk | None
     aggregates: UserAggregates | None
     session_fields: tuple[KeystrokeTiming, ...]
+    replay_sessions: tuple[tuple[int, ...], ...] = ()
+    replay_version: int | None = None
+    """The history item's version, or None when the user has no history yet."""
+
+    @property
+    def replay_history(self) -> frozenset[int]:
+        return frozenset(shingle for session in self.replay_sessions for shingle in session)
+
+
+def session_shingles(fields: tuple[KeystrokeTiming, ...]) -> frozenset[int]:
+    return frozenset().union(*(timing_shingles(field) for field in fields))
 
 
 def _key(partition: str, sort: str) -> dict[str, dict[str, str]]:
@@ -118,6 +139,7 @@ class Store:
             "account": (user, "ACCOUNT"),
             "aggregates": (f"AGG#{uid}", f"WINDOW#{AGGREGATE_WINDOW}"),
             "session": (f"SESS#{request.session_id}", "META"),
+            "replay": (f"REPLAY#{uid}", "HISTORY"),
         }
         if request.transaction is not None:
             payee = request.transaction.payee_id
@@ -212,6 +234,14 @@ class Store:
                 raise ForeignSessionError(item["PK"])
             session_fields = tuple(_timing(field) for field in item["fields"])
 
+        replay_sessions: tuple[tuple[int, ...], ...] = ()
+        replay_version = None
+        if item := found["replay"]:
+            replay_sessions = tuple(
+                tuple(int(shingle) for shingle in session) for session in item.get("sessions", [])
+            )
+            replay_version = int(item.get("version", 0))
+
         return ScoringState(
             profile=profile,
             profile_sessions=profile_sessions,
@@ -220,6 +250,8 @@ class Store:
             risk=risk,
             aggregates=aggregates,
             session_fields=session_fields,
+            replay_sessions=replay_sessions,
+            replay_version=replay_version,
         )
 
     def save_session(
@@ -279,6 +311,35 @@ class Store:
             "ttl": int(now) + DECISION_TTL_SECONDS,
         }
         self._put(item)
+
+    def save_replay(
+        self, uid: str, state: ScoringState, fields: tuple[KeystrokeTiming, ...], now: float
+    ) -> None:
+        """Remember a confirmed session's shingles, keeping only the most recent sessions.
+
+        Written under optimistic concurrency against the version read at the start of the
+        request: a concurrent confirmation fails the write rather than erasing the other's entry.
+        """
+        shingles = sorted(session_shingles(fields))
+        if not shingles:
+            return
+        sessions = [list(session) for session in state.replay_sessions] + [shingles]
+        item = {
+            "PK": f"REPLAY#{uid}",
+            "SK": "HISTORY",
+            "sessions": sessions[-REPLAY_SESSIONS:],
+            "version": (state.replay_version or 0) + 1,
+            "updated_at": int(now),
+            "ttl": int(now) + REPLAY_TTL_SECONDS,
+        }
+        if state.replay_version is None:
+            self._put(item, ConditionExpression="attribute_not_exists(PK)")
+        else:
+            self._put(
+                item,
+                ConditionExpression="version = :v",
+                ExpressionAttributeValues={":v": {"N": str(state.replay_version)}},
+            )
 
     def _put(self, item: Mapping[str, Any], **conditions: Any) -> None:
         try:
