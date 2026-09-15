@@ -1,12 +1,14 @@
 """Scoring Lambda: the fast plane's only compute (architecture section 5.1).
 
 Parse the checkpoint, read state in one BatchGetItem, hand the evidence to fraudcore, write the
-session and the decision, return. Every scoring decision is made in fraudcore; this module only
-translates between HTTP, DynamoDB and fraudcore types.
+session and the decision, publish the decision event, start the transfer workflow if this is a
+confirmation, return. Every scoring decision is made in fraudcore; this module only translates
+between HTTP, DynamoDB, EventBridge, Step Functions and fraudcore types.
 
 Fail open (CLAUDE.md section 2). A failure reading state, or any error while scoring, returns
-``monitor`` with zero confidence. A failure writing returns the decision anyway. The only responses
-that are not a decision are for requests that are malformed or not the caller's to make.
+``monitor`` with zero confidence. A failure writing or publishing returns the decision anyway. The
+only responses that are not a decision are for requests that are malformed or not the caller's to
+make.
 """
 
 from __future__ import annotations
@@ -22,11 +24,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from fraudcore.events import DECISION_SCORED, decision_detail
 from fraudcore.features import KeystrokeTiming, Transfer
 from fraudcore.fusion import FusionModel
 from fraudcore.policy import Decision, Response, Thresholds, fail_open, response_for
 from fraudcore.scoring import ChannelScore
 from fraudcore.session import SessionEvidence, score_session
+from scoring.publisher import Publisher
 from scoring.request import CheckpointRequest, parse
 from scoring.store import SESSION_MAX_FIELDS, ForeignSessionError, ScoringState, Store
 from scoring.workflow import Workflow
@@ -64,6 +68,10 @@ class TransferWorkflow(Protocol):
     ) -> None: ...
 
 
+class EventPublisher(Protocol):
+    def publish(self, detail_type: str, detail: Mapping[str, Any]) -> None: ...
+
+
 @dataclass(frozen=True)
 class Dependencies:
     store: StateStore
@@ -72,6 +80,7 @@ class Dependencies:
     clock: Callable[[], float] = time.time
     new_id: Callable[[], str] = field(default=lambda: uuid.uuid4().hex)
     workflow: TransferWorkflow | None = None
+    events: EventPublisher | None = None
 
 
 # How a confirmed transfer's state is reported back to the client, per workflow response.
@@ -101,6 +110,7 @@ def lambda_handler(event: Mapping[str, Any], context: Any) -> dict[str, Any]:
                 int(os.environ["STEP_UP_TIMEOUT_SECONDS"]),
                 int(os.environ["REVIEW_TIMEOUT_SECONDS"]),
             ),
+            events=Publisher(boto3.client("events"), os.environ["EVENT_BUS_NAME"]),
         )
     return handle(event, _dependencies)
 
@@ -149,10 +159,45 @@ def handle(event: Mapping[str, Any], deps: Dependencies) -> dict[str, Any]:
     except Exception:
         LOGGER.exception("write failed, returning the decision anyway")
 
+    _publish(uid, decision_id, request, scores, decision, now, deps)
+
     body = _decision_body(decision_id, request, decision)
     if request.checkpoint == "confirmation" and deps.workflow is not None:
         body["transfer"] = _start_transfer(uid, decision_id, request, decision, deps.workflow)
     return _response(200, body, started)
+
+
+def _publish(
+    uid: str,
+    decision_id: str,
+    request: CheckpointRequest,
+    scores: Mapping[str, ChannelScore],
+    decision: Decision,
+    now: float,
+    deps: Dependencies,
+) -> None:
+    if deps.events is None:
+        return
+    transaction = request.transaction
+    try:
+        deps.events.publish(
+            DECISION_SCORED,
+            decision_detail(
+                decision_id=decision_id,
+                session_id=request.session_id,
+                uid=uid,
+                checkpoint=request.checkpoint,
+                device_class=request.device.device_class,
+                decision=decision,
+                scores=scores,
+                created_at=now,
+                payee_id=None if transaction is None else transaction.payee_id,
+                amount=None if transaction is None else transaction.amount,
+            ),
+        )
+    except Exception:
+        # The audit trail is downstream of the decision, never a condition on it.
+        LOGGER.exception("could not publish the decision event")
 
 
 def _start_transfer(
@@ -185,8 +230,8 @@ def _evidence(
             amount=request.transaction.amount,
             # UTC, matching the aggregator's hour histogram.
             hour=datetime.fromtimestamp(now, UTC).hour,
-            # The 24-hour transfer count comes from the ledger, which arrives in Phase 5. Until
-            # then a transfer is counted alone, so velocity contributes nothing.
+            # The 24-hour transfer count will come from the ledger's history. Until the aggregator
+            # computes it, a transfer is counted alone, so velocity contributes nothing.
             transfers_24h=1,
         )
     return SessionEvidence(

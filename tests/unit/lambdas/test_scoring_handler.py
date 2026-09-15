@@ -261,3 +261,68 @@ class TestTransferWorkflow:
 
     def test_every_workflow_response_has_a_client_status(self) -> None:
         assert set(handler.TRANSFER_STATUS) == {"release", "step_up", "review", "cancel"}
+
+
+class FakeEvents:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.published: list[tuple[str, dict[str, Any]]] = []
+
+    def publish(self, detail_type: str, detail: Mapping[str, Any]) -> None:
+        if self.error:
+            raise self.error
+        self.published.append((detail_type, dict(detail)))
+
+
+def _call_with_events(
+    event: dict[str, Any], store: FakeStore, events: FakeEvents
+) -> tuple[int, dict[str, Any]]:
+    deps = handler.Dependencies(
+        store=store,
+        model=FusionModel.load(),
+        thresholds=Thresholds.load(),
+        clock=lambda: NOW,
+        new_id=lambda: "dec-1",
+        events=events,
+    )
+    response = handler.handle(event, deps)
+    return response["statusCode"], json.loads(response["body"])
+
+
+class TestDecisionEvents:
+    def test_every_decision_is_published_as_it_was_returned(self) -> None:
+        events = FakeEvents()
+        _, body = _call_with_events(_event(_payload()), FakeStore(), events)
+
+        detail_type, detail = events.published[0]
+        assert detail_type == "decision.scored"
+        assert (detail["decision_id"], detail["action"]) == ("dec-1", body["action"])
+        assert detail["uid"] == "user-1"
+        assert "transaction" not in detail
+
+    def test_the_event_never_carries_keystroke_timing(self) -> None:
+        events = FakeEvents()
+        _call_with_events(_event(_payload()), FakeStore(), events)
+        serialised = json.dumps(events.published[0][1])
+        for timing_key in ("fields", "hold", "down_down", "up_down"):
+            assert f'"{timing_key}"' not in serialised
+
+    def test_a_confirmation_event_carries_its_transaction(self) -> None:
+        events = FakeEvents()
+        _call_with_events(_event(_confirmation()), FakeStore(), events)
+        assert events.published[0][1]["transaction"] == {"payee_id": "a" * 64, "amount": 250.0}
+
+    def test_a_fail_open_decision_is_still_published(self) -> None:
+        events = FakeEvents()
+        store = FakeStore(load_error=RuntimeError("dynamodb unavailable"))
+        _call_with_events(_event(_payload()), store, events)
+        assert events.published[0][1]["constraints"] == ["fail_open"]
+
+    def test_a_publish_failure_never_changes_the_response(self) -> None:
+        quiet = FakeEvents()
+        _, expected = _call_with_events(_event(_payload()), FakeStore(), quiet)
+        status, body = _call_with_events(
+            _event(_payload()), FakeStore(), FakeEvents(error=RuntimeError("bus unavailable"))
+        )
+        assert status == 200
+        assert body == expected
