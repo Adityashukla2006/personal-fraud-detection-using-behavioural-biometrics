@@ -1,0 +1,12 @@
+{
+  "status": "uncalibrated: hand-set placeholders until research/ fits fusion on the frozen simulator (architecture sections 8.2 and 15.1)",
+  "intercept": -3.0,
+  "channels": {
+    "behaviour": {"weight": 1.0, "mean": 12.0, "scale": 6.0, "alert_z": 2.0},
+    "automation": {"weight": 1.5, "mean": 0.1, "scale": 0.2, "alert_z": 2.0},
+    "transaction": {"weight": 0.8, "mean": 0.5, "scale": 1.0, "alert_z": 2.0},
+    "context": {"weight": 1.0, "mean": 0.2, "scale": 0.5, "alert_z": 2.0},
+    "payee": {"weight": 0.9, "mean": 0.3, "scale": 0.6, "alert_z": 2.0}
+  },
+  "thresholds": {"monitor": 20.0, "step_up": 40.0, "restrict": 65.0, "block": 85.0}
+}
