@@ -8,7 +8,13 @@ PYTHON ?= python
 # pytest, so the two entry points agree.
 export PYTHONPATH := src
 
-.PHONY: help install dataset test test-integration lint format baseline clean
+AWS_PROFILE ?= bfd-admin
+export AWS_PROFILE
+
+DEV := infra/envs/dev
+
+.PHONY: help install dataset test test-integration lint format baseline clean \
+	bootstrap infra-init infra-validate plan apply
 
 help:
 	@echo "install           create .venv and install research and dev dependencies"
@@ -19,6 +25,11 @@ help:
 	@echo "format            ruff format and import sort"
 	@echo "baseline          reproduce the published EER baseline"
 	@echo "clean             remove bytecode and pytest caches"
+	@echo "bootstrap         one-time: create the terraform state bucket"
+	@echo "infra-init        terraform init for envs/dev"
+	@echo "infra-validate    terraform fmt check and validate"
+	@echo "plan              terraform plan for envs/dev"
+	@echo "apply             terraform apply for envs/dev, after reviewing plan"
 
 install:
 	$(PYTHON) -m pip install -r requirements-dev.txt -r requirements-research.txt
@@ -45,3 +56,20 @@ baseline:
 clean:
 	$(PYTHON) -c "import pathlib, shutil; [shutil.rmtree(p) for p in pathlib.Path('.').rglob('__pycache__')]"
 	$(PYTHON) -c "import pathlib, shutil; [shutil.rmtree(p) for p in pathlib.Path('.').rglob('.pytest_cache')]"
+
+bootstrap:
+	terraform -chdir=infra/bootstrap init
+	terraform -chdir=infra/bootstrap apply
+
+infra-init:
+	terraform -chdir=$(DEV) init
+
+infra-validate:
+	terraform fmt -check -recursive infra
+	terraform -chdir=$(DEV) validate
+
+plan:
+	terraform -chdir=$(DEV) plan
+
+apply:
+	terraform -chdir=$(DEV) apply
