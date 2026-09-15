@@ -7,7 +7,7 @@ testpaths = ["tests/unit"]
 # "." makes the research package importable and "src" makes fraudcore importable, without either
 # being installed. Integration tests are excluded from the default run because they need a
 # deployed stack; reach them with 'make test-integration'.
-pythonpath = [".", "src"]
+pythonpath = [".", "src", "src/lambdas"]
 addopts = "-q --strict-markers"
 # Integration tests are named phase_0N_*.py by project convention.
 python_files = ["test_*.py", "phase_*.py"]
@@ -18,6 +18,8 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# First-party roots for import sorting, matching pytest's pythonpath.
+src = [".", "src", "src/lambdas"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
