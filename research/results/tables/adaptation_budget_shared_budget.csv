@@ -1,0 +1,2 @@
+budget,percentile,samples,drift_median,password_only_impersonation,unpoisoned_impersonation
+6.883673491292476,95,357,0.7519328322186092,0.5111764705882352,0.4006862745098039
