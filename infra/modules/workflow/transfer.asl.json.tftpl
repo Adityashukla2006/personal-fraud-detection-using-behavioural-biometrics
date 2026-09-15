@@ -1,0 +1,147 @@
+{
+  "Comment": "Response workflow for one confirmed transfer. The ledger debits only in Release.",
+  "StartAt": "Record",
+  "States": {
+    "Record": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ledger_arn}",
+        "Payload": { "op": "record", "transfer.$": "$" }
+      },
+      "ResultSelector": { "status.$": "$.Payload.status" },
+      "ResultPath": "$.ledger",
+      "Retry": ${lambda_retry},
+      "Next": "Route"
+    },
+    "Route": {
+      "Type": "Choice",
+      "Choices": [
+        { "Variable": "$.response", "StringEquals": "release", "Next": "Release" },
+        { "Variable": "$.response", "StringEquals": "step_up", "Next": "AwaitStepUp" },
+        { "Variable": "$.response", "StringEquals": "review", "Next": "NotifyRestricted" },
+        { "Variable": "$.response", "StringEquals": "cancel", "Next": "NotifyBlocked" }
+      ],
+      "Default": "CancelUnrecognised"
+    },
+    "AwaitStepUp": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${ledger_arn}",
+        "Payload": {
+          "op": "hold",
+          "awaiting": "step_up",
+          "task_token.$": "$$.Task.Token",
+          "transfer.$": "$"
+        }
+      },
+      "TimeoutSecondsPath": "$.hold_seconds",
+      "ResultPath": "$.verification",
+      "Retry": ${lambda_retry},
+      "Catch": [
+        { "ErrorEquals": ["States.Timeout"], "ResultPath": "$.error", "Next": "CancelTimedOut" }
+      ],
+      "Next": "Release"
+    },
+    "NotifyRestricted": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${topic_arn}",
+        "Subject": "bfd: transfer restricted pending review",
+        "Message.$": "States.Format('Transfer {} for user {} is restricted pending review. Release it with SendTaskSuccess using the task token on its ledger item; it is cancelled if no one does.', $.transfer_id, $.uid)"
+      },
+      "ResultPath": null,
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.notify_error", "Next": "AwaitReview" }
+      ],
+      "Next": "AwaitReview"
+    },
+    "AwaitReview": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${ledger_arn}",
+        "Payload": {
+          "op": "hold",
+          "awaiting": "review",
+          "task_token.$": "$$.Task.Token",
+          "transfer.$": "$"
+        }
+      },
+      "TimeoutSecondsPath": "$.review_seconds",
+      "ResultPath": "$.review",
+      "Retry": ${lambda_retry},
+      "Catch": [
+        { "ErrorEquals": ["States.Timeout"], "ResultPath": "$.error", "Next": "CancelTimedOut" }
+      ],
+      "Next": "Release"
+    },
+    "NotifyBlocked": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${topic_arn}",
+        "Subject": "bfd: transfer blocked",
+        "Message.$": "States.Format('Transfer {} for user {} was blocked.', $.transfer_id, $.uid)"
+      },
+      "ResultPath": null,
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.notify_error", "Next": "CancelBlocked" }
+      ],
+      "Next": "CancelBlocked"
+    },
+    "Release": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ledger_arn}",
+        "Payload": { "op": "release", "transfer.$": "$" }
+      },
+      "ResultSelector": { "status.$": "$.Payload.status" },
+      "ResultPath": "$.ledger",
+      "Retry": ${lambda_retry},
+      "Next": "Done"
+    },
+    "CancelTimedOut": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ledger_arn}",
+        "Payload": { "op": "cancel", "reason": "timeout", "transfer.$": "$" }
+      },
+      "ResultSelector": { "status.$": "$.Payload.status" },
+      "ResultPath": "$.ledger",
+      "Retry": ${lambda_retry},
+      "Next": "Done"
+    },
+    "CancelBlocked": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ledger_arn}",
+        "Payload": { "op": "cancel", "reason": "blocked", "transfer.$": "$" }
+      },
+      "ResultSelector": { "status.$": "$.Payload.status" },
+      "ResultPath": "$.ledger",
+      "Retry": ${lambda_retry},
+      "Next": "Done"
+    },
+    "CancelUnrecognised": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ledger_arn}",
+        "Payload": { "op": "cancel", "reason": "unrecognised_response", "transfer.$": "$" }
+      },
+      "ResultSelector": { "status.$": "$.Payload.status" },
+      "ResultPath": "$.ledger",
+      "Retry": ${lambda_retry},
+      "Next": "Done"
+    },
+    "Done": {
+      "Type": "Succeed"
+    }
+  }
+}

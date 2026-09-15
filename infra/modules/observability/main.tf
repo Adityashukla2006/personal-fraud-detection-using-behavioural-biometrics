@@ -41,6 +41,20 @@ resource "aws_budgets_budget" "monthly" {
   }
 }
 
+# Analyst alerts for restricted and blocked transfers. Encrypted with the AWS-managed SNS key: the
+# messages carry identifiers only, no amounts or account numbers.
+resource "aws_sns_topic" "alerts" {
+  name              = "${var.name_prefix}-alerts"
+  kms_master_key_id = "alias/aws/sns"
+}
+
+# Email subscriptions must be confirmed from the inbox before alerts are delivered.
+resource "aws_sns_topic_subscription" "alerts_email" {
+  topic_arn = aws_sns_topic.alerts.arn
+  protocol  = "email"
+  endpoint  = var.alert_email
+}
+
 # Latency is a reported result, so dev traces every request by default rather than the 5% default
 # sampling rate. Traces are free well beyond the traffic this project generates.
 resource "aws_xray_sampling_rule" "functions" {
