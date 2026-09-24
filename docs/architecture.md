@@ -142,7 +142,7 @@ Two choices deserve emphasis.
 
 **Per-device-class profiles.** Profiles are keyed by user and device class (desktop keyboard, mobile touch, tablet), not by user alone. Much of what naive systems call drift is a person switching from laptop to phone. Separating the profiles removes an entire class of false positive at no algorithmic cost.
 
-**Confidence as a first-class output.** Every channel reports evidence sufficiency alongside its score: keystrokes captured, sessions in the profile, staleness of the payee risk computation. Fusion shrinks low-confidence channels toward the prior rather than trusting them, which is what stops a three-session-old profile from blocking anyone.
+**Confidence as a first-class output.** Every channel reports evidence sufficiency alongside its score: keystrokes captured, sessions in the profile, device history. Batch-derived evidence ages differently: the payee channel's batch terms are scaled by their freshness, so stale batch evidence fades from the score instead of shrinking confidence in the live facts beside it. Fusion shrinks low-confidence channels toward the prior rather than trusting them, which is what stops a three-session-old profile from blocking anyone.
 
 ---
 
@@ -388,7 +388,7 @@ risk = 100 * sigmoid(L)
 
 Fitting (`research/fit_fusion.py`, Tier 2). Sessions are assembled exactly as the live store assembles them: CMU typing for the behavioural and automation channels, the simulator's frozen attack classes for everything else. The first 10 CMU subjects are the live simulator's victims and are excluded; 28 subjects fit and 13 evaluate. Each channel is standardised by its mean and deviation over genuine training sessions, then a class-balanced logistic regression with non-negative weights is fitted, since a channel whose anomaly lowered risk would be a modelling error, not a finding. Thresholds are the 80th, 95th, 99th and 99.9th percentiles of genuine training risk. On the held-out subjects, genuine friction fell from 10.3% under the placeholder weights to 7.7%, with takeover, bot and replay still detected in every session. The simulator's genuine sessions always use the enrolled device and a known payee, so the non-behavioural channels show no genuine variance. Standardising by a numerical floor made any benign non-zero score, a new payee or a new laptop, a saturated anomaly, and the first deployed fit blocked a genuine new-payee transfer in the Phase 5 integration test. A channel's scale is therefore never allowed below its hand-set prior, so fitting can only make a channel more tolerant. Live, after deployment, genuine friction fell from 22% to 16% and replay detection rose from 12% to 100%.
 
-Confidence is evidence sufficiency, not certainty of guilt: keystrokes captured, buffer size, payee-risk staleness, device history length. Shrinking toward zero makes an uninformative channel pull toward the base rate rather than in a random direction.
+Confidence is evidence sufficiency, not certainty of guilt: keystrokes captured, buffer size, device history length. Shrinking toward zero makes an uninformative channel pull toward the base rate rather than in a random direction.
 
 Outputs:
 
@@ -533,7 +533,7 @@ Conventions that matter more than the layout: pinned provider; plan before every
 - Cold starts inflate tail latency and will be visible in p95. Reported separately rather than masked with provisioned concurrency.
 - A DynamoDB read failure in the scoring path fails open to `monitor` with low confidence. A database blip must never lock customers out.
 - Concurrent adaptation invocations can lose writes; the `version` attribute plus a conditional write handles this.
-- An Athena failure leaves stale batch features. The fast path reads `computed_at` and shrinks the payee channel's confidence as staleness grows.
+- An Athena failure leaves stale batch features. The fast path reads `computed_at` and scales the payee channel's batch terms by their freshness, to nothing after a week. Novelty and verification are live facts and keep full confidence; tying their confidence to the batch layer made a new payee's novelty alert only once the aggregator had scored that payee for anyone.
 - A poisoned `sigma` evades a budget that only constrains `mu`. Bounded per section 7.6.
 
 **Evaluation limits.** Section 15.1.

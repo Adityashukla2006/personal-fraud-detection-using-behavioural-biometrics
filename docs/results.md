@@ -187,6 +187,7 @@ its replay restricted every genuine control on day one, which is unexplained (se
    new payee that someone else has recently paid, and only stepped up for one nobody has. The Phase 5
    integration test failed this way once the nightly aggregator had scored its test payees, and it is
    the most likely cause of the Phase 9 controls being restricted on day one (the replay cleaned up its
-   decisions, so that link is inferred, not shown). The novelty and verification terms are live facts
-   and arguably should not take their confidence from the batch layer's freshness. Changing that
-   changes the deployed model, so it is left as a decision.
+   decisions, so that link is inferred, not shown). **Fixed:** the channel's confidence is now always
+   1.0, its scale doubled to 1.2 so every case the fusion model was fitted on keeps an identical
+   representation, and the batch terms are weighted double and scaled by their own freshness, so a
+   unit of fresh batch risk is exactly as strong as before. Only the coupling changed.
