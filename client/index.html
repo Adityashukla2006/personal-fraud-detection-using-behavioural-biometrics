@@ -3,74 +3,309 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>BFD Bank</title>
-    <link rel="stylesheet" href="styles.css" />
+    <title>BFD Bank Net Banking</title>
+    <meta name="description" content="Research demo of behavioural fraud detection on AWS." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 4 7v8c0 7.5 5.1 13.4 12 15 6.9-1.6 12-7.5 12-15V7z' fill='%230f3d6e'/%3E%3Cpath d='m10 16 4 4 8-9' stroke='%23fff' stroke-width='3' fill='none'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="bank.css" />
     <script type="module" src="app.mjs"></script>
   </head>
   <body>
-    <main>
-      <header>
-        <h1>BFD Bank</h1>
-        <p class="note">Research demo. Only keystroke timing leaves this page, never what you type. <a href="console.html">Operator console</a></p>
+    <div class="app" id="app" data-signed-in="false">
+      <header class="topbar">
+        <a class="brand" href="#dashboard" aria-label="BFD Bank home">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 4 7v8c0 7.5 5.1 13.4 12 15 6.9-1.6 12-7.5 12-15V7z" /><path class="tick" d="m10 16 4 4 8-9" /></svg>
+          <span><b>BFD Bank</b><small>Net Banking</small></span>
+        </a>
+        <nav class="mainnav" id="mainnav" aria-label="Main">
+          <a href="#dashboard" data-nav="dashboard">Accounts</a>
+          <a href="#transfer" data-nav="transfer">Transfer</a>
+          <a href="#activity" data-nav="activity">Activity</a>
+          <a href="#security" data-nav="security">Security</a>
+        </nav>
+        <div class="topbar-actions">
+          <button type="button" id="hood-toggle" class="hood-toggle" aria-pressed="false" aria-controls="hood">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18h10a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.1 9.3 4.5 4.5 0 0 0 7 18z" /></svg>
+            <span>Under the hood</span>
+          </button>
+          <div class="user-chip" id="user-chip">
+            <span class="avatar" id="avatar" aria-hidden="true"></span>
+            <span class="who" id="who"></span>
+            <button type="button" id="signout" class="link">Sign out</button>
+          </div>
+        </div>
       </header>
 
-      <section id="signin" class="card">
-        <h2>Sign in</h2>
-        <form id="signin-form">
-          <label>Email
-            <input id="email" type="email" autocomplete="username webauthn" required data-capture="login" />
-          </label>
-          <label>Password
-            <input id="password" type="password" autocomplete="current-password" data-capture="login" />
-          </label>
-          <label id="new-password-row" hidden>New password
-            <input id="new-password" type="password" autocomplete="new-password" minlength="12" />
-          </label>
-          <div class="row">
-            <button type="submit">Sign in with password</button>
-            <button type="button" id="passkey-signin" class="secondary">Sign in with passkey</button>
+      <div class="layout">
+        <main class="main" id="main">
+          <!-- Sign in ------------------------------------------------------------------------- -->
+          <section class="view signin-view" data-view="signin">
+            <div class="signin-hero">
+              <h1>Banking that knows it's you.</h1>
+              <p>Every transfer is checked against how you type, the device you use and who you pay, in under a quarter of a second. Nothing you type ever leaves this page: only the rhythm of it.</p>
+              <ul class="hero-points">
+                <li>Passkey sign-in and verification</li>
+                <li>Behavioural checks on every step of a transfer</li>
+                <li>Suspicious transfers held, never silently sent</li>
+              </ul>
+            </div>
+            <form class="card signin-card" id="signin-form" autocomplete="on">
+              <h2>Sign in to Net Banking</h2>
+              <label>Email address
+                <input id="email" type="email" autocomplete="username webauthn" required data-capture="login" />
+              </label>
+              <label>Password
+                <input id="password" type="password" autocomplete="current-password" data-capture="login" />
+              </label>
+              <label id="new-password-row" hidden>Choose a new password
+                <input id="new-password" type="password" autocomplete="new-password" minlength="12" />
+              </label>
+              <button type="submit" class="primary wide">Sign in</button>
+              <div class="or"><span>or</span></div>
+              <button type="button" id="passkey-signin" class="secondary wide">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="9" r="4" /><path d="M2 21a6 6 0 0 1 12 0M16 11h6m-2 0v3m-2-3v2" /></svg>
+                Sign in with a passkey
+              </button>
+              <p class="fine">Research demonstration. Use only the test accounts provided.</p>
+            </form>
+          </section>
+
+          <!-- Dashboard ----------------------------------------------------------------------- -->
+          <section class="view" data-view="dashboard" hidden>
+            <div class="page-head">
+              <div>
+                <p class="eyebrow" id="greeting">Welcome back</p>
+                <h1>Your accounts</h1>
+              </div>
+              <a class="primary button" href="#transfer">New transfer</a>
+            </div>
+            <div class="grid-2">
+              <article class="card account-card">
+                <div class="account-top">
+                  <span>Savings account</span>
+                  <span class="mono" id="account-number">•••• ••••</span>
+                </div>
+                <p class="label">Available balance</p>
+                <p class="balance" id="balance">…</p>
+                <div class="account-actions">
+                  <a href="#transfer" class="chip-link">Transfer money</a>
+                  <a href="#activity" class="chip-link">View statement</a>
+                </div>
+              </article>
+              <article class="card protect-card">
+                <h2>Protection</h2>
+                <div class="protect-row">
+                  <span class="status-dot" data-level="good" id="protect-dot"></span>
+                  <div>
+                    <p class="protect-title" id="protect-title">Behavioural protection is on</p>
+                    <p class="muted small" id="protect-detail">Your sign-in was checked just now.</p>
+                  </div>
+                </div>
+                <ul class="checks">
+                  <li>Typing rhythm</li><li>Device</li><li>Payee history</li><li>Transfer pattern</li>
+                </ul>
+              </article>
+            </div>
+            <article class="card">
+              <div class="card-head">
+                <h2>Recent transactions</h2>
+                <a href="#activity" class="link">See all</a>
+              </div>
+              <ul class="txn-list" id="recent-list"></ul>
+            </article>
+          </section>
+
+          <!-- Transfer ------------------------------------------------------------------------ -->
+          <section class="view" data-view="transfer" hidden>
+            <div class="page-head">
+              <div>
+                <p class="eyebrow">Payments</p>
+                <h1>Transfer money</h1>
+              </div>
+            </div>
+            <ol class="stepper" id="stepper">
+              <li data-step="payee">Beneficiary</li>
+              <li data-step="amount">Amount</li>
+              <li data-step="review">Review</li>
+              <li data-step="done">Done</li>
+            </ol>
+
+            <form class="card step" data-step="payee" id="payee-form" novalidate>
+              <h2>Who are you paying?</h2>
+              <label>Beneficiary name
+                <input id="payee-name" autocomplete="off" required data-capture="payee" />
+              </label>
+              <div class="grid-2 tight">
+                <label>Account number
+                  <input id="payee-account" inputmode="numeric" autocomplete="off" required data-capture="payee" />
+                </label>
+                <label>IFSC code
+                  <input id="payee-ifsc" autocomplete="off" required data-capture="payee" placeholder="e.g. BFDB0001234" />
+                </label>
+              </div>
+              <p class="field-error" id="payee-error" hidden></p>
+              <div class="actions"><button type="submit" class="primary">Continue</button></div>
+            </form>
+
+            <form class="card step" data-step="amount" id="amount-form" novalidate hidden>
+              <h2>How much?</h2>
+              <p class="muted" id="amount-to"></p>
+              <label>Amount (₹)
+                <input id="amount" inputmode="decimal" autocomplete="off" required data-capture="amount" />
+              </label>
+              <label>Remarks <span class="muted">(optional, stays on this device)</span>
+                <input id="remarks" autocomplete="off" maxlength="40" data-capture="amount" />
+              </label>
+              <p class="field-error" id="amount-error" hidden></p>
+              <div class="actions">
+                <button type="button" class="secondary" data-back="payee">Back</button>
+                <button type="submit" class="primary">Continue</button>
+              </div>
+            </form>
+
+            <form class="card step" data-step="review" id="review-form" novalidate hidden>
+              <h2>Review and confirm</h2>
+              <dl class="review">
+                <dt>To</dt><dd id="review-name"></dd>
+                <dt>Account</dt><dd class="mono" id="review-account"></dd>
+                <dt>IFSC</dt><dd class="mono" id="review-ifsc"></dd>
+                <dt>Amount</dt><dd class="amount-big" id="review-amount"></dd>
+              </dl>
+              <label>Re-enter the beneficiary account number to confirm
+                <input id="confirm-account" inputmode="numeric" autocomplete="off" required data-capture="confirm" />
+              </label>
+              <p class="field-error" id="review-error" hidden></p>
+              <div class="actions">
+                <button type="button" class="secondary" data-back="amount">Back</button>
+                <button type="submit" class="primary" id="confirm-button">Confirm transfer</button>
+              </div>
+            </form>
+
+            <article class="card step result" data-step="done" id="result" hidden>
+              <div class="result-icon" id="result-icon" aria-hidden="true"></div>
+              <h2 id="result-title"></h2>
+              <p id="result-text"></p>
+              <dl class="review compact" id="result-details"></dl>
+              <div class="actions center">
+                <button type="button" class="secondary" id="result-stepup" hidden>Verify with passkey</button>
+                <a class="primary button" href="#dashboard">Back to accounts</a>
+                <button type="button" class="secondary" id="another">New transfer</button>
+              </div>
+            </article>
+          </section>
+
+          <!-- Activity ------------------------------------------------------------------------ -->
+          <section class="view" data-view="activity" hidden>
+            <div class="page-head">
+              <div>
+                <p class="eyebrow">Statement</p>
+                <h1>Activity</h1>
+              </div>
+              <button type="button" class="secondary" id="refresh">Refresh</button>
+            </div>
+            <article class="card">
+              <ul class="txn-list" id="activity-list"></ul>
+            </article>
+          </section>
+
+          <!-- Security ------------------------------------------------------------------------ -->
+          <section class="view" data-view="security" hidden>
+            <div class="page-head">
+              <div>
+                <p class="eyebrow">Settings</p>
+                <h1>Security</h1>
+              </div>
+            </div>
+            <div class="grid-2">
+              <article class="card">
+                <h2>Passkeys</h2>
+                <p class="muted">A passkey on this device lets you sign in and release held transfers without a password. It is the only thing that can release a held transfer.</p>
+                <button type="button" class="primary" id="register-passkey">Add a passkey</button>
+              </article>
+              <article class="card">
+                <h2>This device</h2>
+                <p class="muted">What your browser tells us about this device, sent with each check. No fingerprinting: the ID is random and lives only in this browser.</p>
+                <pre class="payload small" id="device-info"></pre>
+              </article>
+            </div>
+            <article class="card">
+              <h2>What leaves your browser</h2>
+              <p class="muted">When you type, this page records only when keys go down and up. It never records which key, and never sends what you typed. Payee account numbers are hashed with SHA-256 before they leave. Open <b>Under the hood</b> to see every request exactly as it was sent.</p>
+            </article>
+          </section>
+
+          <footer class="footer">
+            <span>BFD Bank is a research prototype. It moves no real money.</span>
+            <a href="console.html">Bank operations console</a>
+          </footer>
+        </main>
+
+        <!-- Under the hood ----------------------------------------------------------------------- -->
+        <aside class="hood" id="hood" aria-label="Under the hood" hidden>
+          <div class="hood-head">
+            <div>
+              <h2>Under the hood</h2>
+              <p class="muted small">Every request, live, through the deployed AWS stack.</p>
+            </div>
+            <button type="button" class="icon-button" id="hood-close" aria-label="Close">×</button>
+          </div>
+
+          <section class="hood-section">
+            <h3>Request path</h3>
+            <div class="hood-map" data-hood="map"></div>
+            <p class="legend-line"><span class="line-solid"></span> synchronous <span class="line-dashed"></span> asynchronous, after the response</p>
+          </section>
+
+          <section class="hood-section">
+            <h3>Latency of the last check</h3>
+            <div data-hood="waterfall"><p class="muted small">Sign in to see a measured request.</p></div>
+          </section>
+
+          <section class="hood-section">
+            <h3>Decision</h3>
+            <div data-hood="decision"><p class="muted small">No decision yet.</p></div>
+          </section>
+
+          <section class="hood-section">
+            <h3>What your browser sent</h3>
+            <ul class="privacy-checks">
+              <li>No characters or key codes</li>
+              <li>Payee account hashed</li>
+              <li>Timings in seconds only</li>
+            </ul>
+            <pre class="payload" data-hood="payload">Nothing sent yet.</pre>
+          </section>
+
+          <section class="hood-section">
+            <h3>Attack simulation</h3>
+            <p class="muted small">Demo controls. Each alters only the timing of the next check, exactly as an attacker's software would, and then switches itself off.</p>
+            <label class="toggle"><input type="checkbox" id="demo-bot" /> <span>Type like a bot: perfectly even keystrokes</span></label>
+            <label class="toggle"><input type="checkbox" id="demo-replay" /> <span>Replay my last confirmed transfer's typing</span></label>
+          </section>
+
+          <section class="hood-section">
+            <h3>Request log</h3>
+            <ol class="request-log" data-hood="log"></ol>
+          </section>
+        </aside>
+      </div>
+
+      <dialog id="stepup-dialog" class="dialog">
+        <form method="dialog">
+          <div class="dialog-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
+          </div>
+          <h2>Confirm it's you</h2>
+          <p id="stepup-reason">This transfer looks different from how you usually bank, so we've held it. Nothing has left your account.</p>
+          <p class="muted small">Verify with the passkey on this device to release it. The hold expires on its own if you don't.</p>
+          <div class="actions center">
+            <button value="later" class="secondary">Not now</button>
+            <button value="verify" class="primary" id="stepup-verify">Verify with passkey</button>
           </div>
         </form>
-      </section>
+      </dialog>
 
-      <section id="account" class="card" hidden>
-        <div class="row spread">
-          <span id="who"></span>
-          <span class="row">
-            <button type="button" id="register-passkey" class="secondary">Add a passkey</button>
-            <button type="button" id="signout" class="secondary">Sign out</button>
-          </span>
-        </div>
-        <h2>Transfer</h2>
-        <form id="transfer-form">
-          <label>Payee account
-            <input id="payee" inputmode="numeric" autocomplete="off" required data-capture="payee" />
-          </label>
-          <label>Amount
-            <input id="amount" inputmode="decimal" autocomplete="off" required data-capture="amount" />
-          </label>
-          <button type="submit">Confirm transfer</button>
-        </form>
-        <p id="transfer-state" hidden>
-          Transfer <strong id="transfer-status"></strong> <span id="transfer-balance" class="muted"></span>
-        </p>
-        <button type="button" id="stepup" hidden>Verify with passkey to release</button>
-      </section>
-
-      <section id="decision" class="card" hidden aria-live="polite">
-        <h2>Decision <span class="muted">at <span id="decision-checkpoint"></span></span></h2>
-        <p class="action" id="decision-action"></p>
-        <dl>
-          <dt>Risk</dt><dd id="decision-risk"></dd>
-          <dt>Confidence</dt><dd id="decision-confidence"></dd>
-          <dt>Policy</dt><dd id="decision-constraints"></dd>
-          <dt>Latency</dt><dd id="decision-latency"></dd>
-        </dl>
-        <h3>Top contributions</h3>
-        <ol id="decision-contributions"></ol>
-      </section>
-
-      <p id="status" role="status"></p>
-    </main>
+      <div class="toast" id="status" role="status" aria-live="polite"></div>
+      <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+    </div>
   </body>
 </html>
