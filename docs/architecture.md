@@ -347,6 +347,22 @@ This is a cost argument supported by measurement, not a proof, and is reported a
 
 P2 isolates the trust gate; P3 minus P2 isolates robust aggregation plus budget. Without P2 the result cannot be attributed to either half of the mechanism.
 
+### 7.10 Measurement arms
+
+A policy comparison is only as good as the protocol it is measured under, and two protocol choices decide the answer on their own. Each is therefore an arm, run across every policy and every variant.
+
+| Arm | Operating threshold | Adapting sessions | Attacker trust |
+|---|---|---|---|
+| `legacy` | held at enrolment | passkey sign-ins, one in ten a step-up | 0.6 |
+| `recalculated` | recalibrated against the current profile | passkey sign-ins, one in ten a step-up | 0.6 |
+| `production` | recalibrated against the current profile | verified step-ups only | 1.0 |
+
+**The threshold.** The operating threshold is a false rejection rate against genuine typing, so a live system recomputes it when the profile moves. Holding it at enrolment while the profile adapts measures a moved profile with an unmoved ruler: it flatters an attacker who inflates the scale, because every score shrinks and the fixed threshold accepts more, and it penalises one who shifts the centre. `legacy` is kept only because the first reported numbers were produced under it.
+
+**Trust.** The adaptation Lambda is triggered by `stepup.verified` and nothing else (section 5.3), so every session that can reach a profile carries `c_verify = 1.0`. The `signin` regime of the first two arms describes a system that adapts on ordinary sessions, which is the design the literature adapts naively and the one the mechanism is aimed at. The `production` arm describes what is deployed here, and it changes the threat: an attacker at 0.6 never reaches adaptation at all, so the only attacker worth modelling is one holding the authenticator, at 1.0, who re-anchors as well as poisons. Reporting one arm without the other would either overstate the exposure of the deployed system or understate what the mechanism is for.
+
+Every reported mean carries a 95% bootstrap interval over victim-attacker pairs, across five seeds per pair. The pair is the resampling unit because seeds of one pair share a victim, an attacker and their drift.
+
 ---
 
 ## 8. Risk fusion
