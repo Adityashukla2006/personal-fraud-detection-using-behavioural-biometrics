@@ -50,6 +50,10 @@ class Stack:
         self.table = aws.resource("dynamodb").Table(outputs["table_name"])
         self.sfn = aws.client("stepfunctions")
         self.created: list[tuple[str, str]] = []
+        # The nightly aggregator scores every payee in the lake, including earlier runs' test
+        # payees, and a payee with fresh batch risk scores differently from one it has never seen.
+        # A payee unique to this test keeps the test measuring the workflow, not that history.
+        self.run = time.time_ns()
 
     def put(self, item: dict[str, Any]) -> None:
         self.table.put_item(Item=item)
@@ -85,9 +89,8 @@ class Stack:
         self.created.append((f"LEDGER#{self.sub}", f"TXN#{body['decision_id']}"))
         return body
 
-    @staticmethod
-    def payee_id(payee: str) -> str:
-        return hashlib.sha256(f"{TEST_PREFIX}{payee}".encode()).hexdigest()
+    def payee_id(self, payee: str) -> str:
+        return hashlib.sha256(f"{TEST_PREFIX}{payee}{self.run}".encode()).hexdigest()
 
     def seed_takeover_profile(self) -> None:
         # Centred far from the fixture typing with tight dispersion, and old enough to be trusted.
@@ -102,9 +105,15 @@ class Stack:
             }
         )
 
+    def forget_replays(self) -> None:
+        # Every confirmation types the same fixture, so a remembered confirmation from an earlier
+        # test or run would score the next one as a replay and corroborate a block.
+        self.table.delete_item(Key={"PK": f"REPLAY#{self.sub}", "SK": "HISTORY"})
+
     def cleanup(self) -> None:
         for partition, sort in {*self.created, (f"LEDGER#{self.sub}", "BALANCE")}:
             self.table.delete_item(Key={"PK": partition, "SK": sort})
+        self.forget_replays()
 
 
 @pytest.fixture
@@ -112,6 +121,7 @@ def stack(
     aws: boto3.Session, outputs: dict[str, Any], user: dict[str, str]  # noqa: F811
 ) -> Iterator[Stack]:
     stack = Stack(aws, outputs, user["sub"])
+    stack.forget_replays()
     yield stack
     stack.cleanup()
 
