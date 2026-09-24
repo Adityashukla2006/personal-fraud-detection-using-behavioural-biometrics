@@ -133,6 +133,7 @@ Sections 1 to 7 are the proposal as submitted. Phases 0 to 9 are built, deployed
 - **Features.** `fraudcore` extracts 12 keystroke features, but profiles and scoring use the 9 that the CMU benchmark can measure. The other 3 describe corrections and pastes, which CMU does not contain.
 - **Risk engine.** Scoring fuses five channels (behaviour, automation, transaction, context, payee) by logistic regression, rather than mapping one anomaly score. Behaviour alone can never go beyond step-up.
 - **Adaptation.** Profiles learn only from passkey-verified step-ups delivered by EventBridge, not on a schedule. See docs/results.md section 2 for what that does and does not defend.
+- **Client.** A net banking client (accounts, a three-step transfer, statement, security) with an "Under the hood" panel that draws each request's route through the deployed AWS services, with measured latency, the decision and the exact payload sent. Demo script: [docs/demo.md](docs/demo.md).
 - **Cost.** Not every service is always-free: Step Functions, KMS and X-Ray bill per use. Measured cost is $0.23 per thousand sessions, with nothing billing while idle.
 
 ## 8. Repository Structure
