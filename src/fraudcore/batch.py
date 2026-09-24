@@ -18,10 +18,16 @@ Per user and recently added payee (an edge), four signals, each in [0, 1]:
 
 Volume, regularity and band describe a new tutor's fees as well as theft. Only identity separates
 the owner's own new habit from someone else's, so an edge is flagged only when the pattern is strong
-and identity corroborates it. The graded score still raises the payee channel without a flag.
+and identity corroborates it, and only a flagged edge raises the live payee channel.
 
 Per payee across users: distinct senders, and how many of them started paying it recently. Money
 arriving from several unrelated customers who all began at once is the shape of a mule account.
+
+Per account: whether its sessions come from one typist or two (``two_typist``). A shared account,
+or an account a second person has been using for weeks, leaves two groups of typing rather than one
+group with drift. Sessions are split in two by k-medians in the scoring metric, and the split is
+called two typists when the groups sit far apart relative to their own spread and the smaller one is
+not a handful of outliers.
 """
 
 from __future__ import annotations
@@ -222,8 +228,7 @@ def edge_signals(
             baseline = max(_mean(elsewhere), 1e-6)
             identity_gap = (_mean(on_edge) - baseline) / baseline
             identity = _clamp(
-                (identity_gap - IDENTITY_GAP_FLOOR)
-                / (IDENTITY_GAP_SATURATION - IDENTITY_GAP_FLOOR)
+                (identity_gap - IDENTITY_GAP_FLOOR) / (IDENTITY_GAP_SATURATION - IDENTITY_GAP_FLOOR)
             )
 
         cumulative = sum(r.amount for r in sent)
@@ -344,3 +349,81 @@ def compute(records: Sequence[TransferRecord], now: float) -> BatchResult:
         edges += edge_signals(owned, now, user)
 
     return BatchResult(aggregates, tuple(edges), tuple(payee_signals(usable, now, edges)))
+
+
+# ---------------------------------------------------------------------------------------------
+# Two typists on one account
+# ---------------------------------------------------------------------------------------------
+
+# Fewer sessions than this cannot tell a second group from a few noisy sittings.
+MIN_TYPIST_SESSIONS = 10
+# The smaller group must hold at least this share of sessions: a few outliers are not a person.
+MIN_TYPIST_SHARE = 0.2
+# Groups this many within-group spreads apart are two typists. Calibrated on CMU by
+# research/two_typist.py at a 5% false flag rate on single-typist accounts of held-out subjects.
+TWO_TYPIST_SEPARATION = 3.82
+MAX_SPLIT_ITERATIONS = 50
+
+
+@dataclass(frozen=True)
+class TypistSplit:
+    """The best split of an account's sessions into two groups.
+
+    ``separation`` is the distance between the group centres over the mean distance of a session
+    from its own centre, both in scaled Manhattan units, so it is scale free. ``share`` is the
+    smaller group's fraction of sessions.
+    """
+
+    separation: float
+    share: float
+    assignment: tuple[int, ...]
+
+    @property
+    def two_typists(self) -> bool:
+        return self.separation >= TWO_TYPIST_SEPARATION and self.share >= MIN_TYPIST_SHARE
+
+
+def _manhattan(a: Sequence[float], b: Sequence[float]) -> float:
+    return sum(abs(x - y) for x, y in zip(a, b, strict=True))
+
+
+def _median_point(points: Sequence[Sequence[float]]) -> list[float]:
+    return [quantile([point[f] for point in points], 0.5) for f in range(len(points[0]))]
+
+
+def two_typist(sessions: Sequence[Sequence[float]], scale: Sequence[float]) -> TypistSplit | None:
+    """Split one account's session vectors in two, or ``None`` with too few sessions.
+
+    ``scale`` is the profile's per-feature dispersion, so distances are the scoring metric. The
+    split is k-medians, the centre that minimises Manhattan distance, seeded deterministically from
+    the session farthest from the account's median and the session farthest from that.
+    """
+    if len(sessions) < MIN_TYPIST_SESSIONS:
+        return None
+    if any(value <= 0 for value in scale) or any(len(s) != len(scale) for s in sessions):
+        raise ValueError("need a positive scale with one entry per feature")
+    points = [[value / spread for value, spread in zip(s, scale, strict=True)] for s in sessions]
+
+    middle = _median_point(points)
+    first = max(range(len(points)), key=lambda i: _manhattan(points[i], middle))
+    second = max(range(len(points)), key=lambda i: _manhattan(points[i], points[first]))
+    centres = [points[first], points[second]]
+
+    assignment: list[int] = []
+    for _ in range(MAX_SPLIT_ITERATIONS):
+        updated = [
+            0 if _manhattan(p, centres[0]) <= _manhattan(p, centres[1]) else 1 for p in points
+        ]
+        groups = [[p for p, g in zip(points, updated, strict=True) if g == k] for k in (0, 1)]
+        if not groups[0] or not groups[1]:
+            return TypistSplit(0.0, 0.0, tuple(updated))
+        centres = [_median_point(group) for group in groups]
+        if updated == assignment:
+            break
+        assignment = updated
+
+    within = _mean([_manhattan(p, centres[g]) for p, g in zip(points, assignment, strict=True)])
+    between = _manhattan(centres[0], centres[1])
+    separation = between / within if within > 0 else math.inf
+    share = min(assignment.count(0), assignment.count(1)) / len(assignment)
+    return TypistSplit(separation, share, tuple(assignment))

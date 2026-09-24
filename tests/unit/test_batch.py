@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from fraudcore import batch
 from fraudcore.batch import (
     SIPHON_WEIGHTS,
     TransferRecord,
@@ -151,3 +152,40 @@ def test_a_record_with_a_bad_amount_is_rejected() -> None:
         TransferRecord("u", "p", 0.0, NOW)
     with pytest.raises(ValueError):
         TransferRecord("u", "p", 5.0, NOW, identity_score=-1.0)
+
+
+class TestTwoTypist:
+    def test_an_even_line_splits_at_its_middle_with_a_hand_computed_separation(self) -> None:
+        # 0..11 splits into 0..5 and 6..11, medians 2.5 and 8.5: between 6, mean within 1.5.
+        split = batch.two_typist([[float(v)] for v in range(12)], [1.0])
+        assert split is not None
+        assert split.assignment == (0,) * 6 + (1,) * 6
+        assert split.separation == pytest.approx(4.0)
+        assert split.share == 0.5
+
+    def test_separation_is_measured_in_the_profile_scale_and_so_scale_free(self) -> None:
+        wide = batch.two_typist([[2.0 * v] for v in range(12)], [2.0])
+        assert wide is not None and wide.separation == pytest.approx(4.0)
+
+    def test_two_tight_distant_groups_are_two_typists(self) -> None:
+        sessions = [[0.0, 0.0]] * 6 + [[10.0, 10.0]] * 6
+        split = batch.two_typist(sessions, [1.0, 1.0])
+        assert split is not None and split.two_typists
+
+    def test_a_few_outliers_are_not_a_second_typist(self) -> None:
+        split = batch.two_typist([[0.0]] * 11 + [[100.0]], [1.0])
+        assert split is not None
+        assert split.share < batch.MIN_TYPIST_SHARE
+        assert not split.two_typists
+
+    def test_a_separation_exactly_at_the_threshold_flags(self) -> None:
+        split = batch.TypistSplit(batch.TWO_TYPIST_SEPARATION, batch.MIN_TYPIST_SHARE, ())
+        assert split.two_typists
+
+    def test_too_few_sessions_give_no_verdict(self) -> None:
+        sessions = [[float(v)] for v in range(batch.MIN_TYPIST_SESSIONS - 1)]
+        assert batch.two_typist(sessions, [1.0]) is None
+
+    def test_a_non_positive_scale_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="positive scale"):
+            batch.two_typist([[float(v)] for v in range(12)], [0.0])
