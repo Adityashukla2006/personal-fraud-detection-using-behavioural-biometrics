@@ -127,7 +127,7 @@ Full component-by-component description: [docs/architecture.md](docs/architectur
 
 ## Current State and Deviations from the Proposal
 
-Sections 1 to 7 are the proposal as submitted. Phases 0 to 8 are built, deployed and measured; results are in [docs/results.md](docs/results.md) and the design of record is [docs/architecture.md](docs/architecture.md). Where the build departs from the proposal:
+Sections 1 to 7 are the proposal as submitted. Phases 0 to 9 are built, deployed and measured; results are in [docs/results.md](docs/results.md) and the design of record is [docs/architecture.md](docs/architecture.md). Where the build departs from the proposal:
 
 - **Threat model.** Three attacker-driven fraud classes, account takeover, bot and replay, and low-and-slow siphoning, plus profile poisoning as the attack on the adaptation mechanism. O6's impostor sessions are the takeover class.
 - **Features.** `fraudcore` extracts 12 keystroke features, but profiles and scoring use the 9 that the CMU benchmark can measure. The other 3 describe corrections and pastes, which CMU does not contain.
