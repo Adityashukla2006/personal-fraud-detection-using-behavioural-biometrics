@@ -178,7 +178,15 @@ its replay restricted every genuine control on day one, which is unexplained (se
 2. **The live global threshold is loose.** Before any poisoning, 46% of an impostor's pooled sessions
    pass behaviour without a step-up. This is the fusion model's calibration on synthetic sessions, and
    it is the largest single weakness in the deployed identity channel.
-3. **Phase 9 control friction.** On day one every genuine control paying a new payee was restricted.
-   The payee channel alerts on novelty (z about 2.4), and roughly 1.55 further logit units come from
-   another channel, most plausibly behavioural drift from a day-one profile. The replay cleaned up its
-   decisions, so confirming it needs a rerun with cleanup disabled.
+3. **A new payee's alert depends on whether the batch layer has seen it.** A new, unverified payee
+   scores 2.0 on the payee channel, and the channel's confidence is 0.5 plus half the freshness of the
+   payee's batch risk item. With no batch item, confidence is 0.5 and the representation (1.67) stays
+   below the alert level of 2. With any fresh batch item, however benign (a risk of 0.10 is enough),
+   confidence approaches 1, the representation reaches 3.3, and the channel alerts. Two alerting
+   channels corroborate a block, so a genuine user whose typing has drifted is blocked for paying a
+   new payee that someone else has recently paid, and only stepped up for one nobody has. The Phase 5
+   integration test failed this way once the nightly aggregator had scored its test payees, and it is
+   the most likely cause of the Phase 9 controls being restricted on day one (the replay cleaned up its
+   decisions, so that link is inferred, not shown). The novelty and verification terms are live facts
+   and arguably should not take their confidence from the batch layer's freshness. Changing that
+   changes the deployed model, so it is left as a decision.
