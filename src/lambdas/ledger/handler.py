@@ -22,11 +22,12 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
+from fraudcore.policy import OPENING_BALANCE
+
 LOGGER = logging.getLogger()
 LOGGER.setLevel(logging.INFO)
 
 # Every demo account starts with this much, seeded on its first transfer.
-OPENING_BALANCE = Decimal("100000")
 
 PENDING = "pending"
 AWAITING_STEP_UP = "awaiting_step_up"

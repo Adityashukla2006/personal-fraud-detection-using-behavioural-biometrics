@@ -9,6 +9,7 @@ so it is the only thing that can open the hold.
 
 Routes, all behind the JWT authorizer:
 
+    GET  /account                                 balance and the most recent transfers
     GET  /transfers/{transfer_id}                 status, amount, balance
     POST /transfers/{transfer_id}/stepup          start: returns a WebAuthn challenge
     POST /transfers/{transfer_id}/stepup/verify   finish: verifies the passkey, releases the hold
@@ -31,11 +32,16 @@ from typing import Any, Protocol
 
 from botocore.exceptions import ClientError, ParamValidationError
 
+from fraudcore.policy import OPENING_BALANCE
+
 LOGGER = logging.getLogger()
 LOGGER.setLevel(logging.INFO)
 
 AWAITING_STEP_UP = "awaiting_step_up"
 _TRANSFER_ID = re.compile(r"[A-Za-z0-9_-]{8,64}")
+RECENT_TRANSFERS = 10
+# Ledger partitions are small, so the account view reads this many and sorts them itself.
+LEDGER_PAGE = 100
 
 # Cognito's answers to a credential that does not verify, or a session that is no longer valid.
 _FAILED_VERIFICATION = frozenset(
@@ -55,6 +61,8 @@ class TransferStore(Protocol):
 
     def balance(self, uid: str) -> Decimal | None: ...
 
+    def transfers(self, uid: str) -> list[dict[str, Any]]: ...
+
 
 class LedgerReader:
     def __init__(self, table: Any) -> None:
@@ -70,6 +78,14 @@ class LedgerReader:
             Key={"PK": f"LEDGER#{uid}", "SK": "BALANCE"}, ConsistentRead=True
         ).get("Item")
         return None if item is None else item["balance"]
+
+    def transfers(self, uid: str) -> list[dict[str, Any]]:
+        response = self._table.query(
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :txn)",
+            ExpressionAttributeValues={":pk": f"LEDGER#{uid}", ":txn": "TXN#"},
+            Limit=LEDGER_PAGE,
+        )
+        return list(response.get("Items", []))
 
 
 @dataclass(frozen=True)
@@ -98,6 +114,13 @@ def handle(event: Mapping[str, Any], deps: Dependencies) -> dict[str, Any]:
     uid, username = claims.get("sub"), claims.get("username")
     if not (isinstance(uid, str) and uid and isinstance(username, str) and username):
         return _response(401, {"error": "unauthenticated"})
+
+    if event.get("routeKey") == "GET /account":
+        try:
+            return _account(uid, deps)
+        except Exception:
+            LOGGER.exception("account request failed")
+            return _response(502, {"error": "transfer service unavailable"})
 
     transfer_id = (event.get("pathParameters") or {}).get("transfer_id", "")
     if not (isinstance(transfer_id, str) and _TRANSFER_ID.fullmatch(transfer_id)):
@@ -133,6 +156,34 @@ def _status(
             "reason": transfer.get("reason"),
             "amount": float(transfer["amount"]),
             "balance": None if balance is None else float(balance),
+        },
+    )
+
+
+def _account(uid: str, deps: Dependencies) -> dict[str, Any]:
+    """The caller's balance and newest transfers. Only display fields leave: never a task token.
+
+    A ledger with no balance item has not been debited yet, so it still holds the opening balance.
+    """
+    balance = deps.store.balance(uid)
+    newest = sorted(
+        deps.store.transfers(uid), key=lambda item: int(item.get("created_at", 0)), reverse=True
+    )[:RECENT_TRANSFERS]
+    return _response(
+        200,
+        {
+            "balance": float(OPENING_BALANCE if balance is None else balance),
+            "transfers": [
+                {
+                    "transfer_id": str(item["SK"]).removeprefix("TXN#"),
+                    "status": item.get("status"),
+                    "amount": float(item.get("amount", 0)),
+                    "payee_id": item.get("payee_id"),
+                    "reason": item.get("reason"),
+                    "created_at": int(item.get("created_at", 0)),
+                }
+                for item in newest
+            ],
         },
     )
 

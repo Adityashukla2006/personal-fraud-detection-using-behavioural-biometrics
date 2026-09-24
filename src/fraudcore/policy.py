@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
@@ -55,7 +56,11 @@ RESPONSES: Mapping[Action, Response] = {
 def response_for(action: Action) -> Response:
     return RESPONSES[action]
 
+
 TOP_CONTRIBUTIONS = 3
+
+# The mock ledger's opening balance: the ledger debits from it, the account view reports it.
+OPENING_BALANCE = Decimal("100000")
 
 
 def _rank(action: Action) -> int:

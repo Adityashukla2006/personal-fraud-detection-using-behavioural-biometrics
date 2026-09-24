@@ -25,9 +25,15 @@ def _error(code: str) -> ClientError:
 
 
 class FakeStore:
-    def __init__(self, transfer: dict[str, Any] | None, balance: Decimal | None = None) -> None:
+    def __init__(
+        self,
+        transfer: dict[str, Any] | None,
+        balance: Decimal | None = None,
+        ledger: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.transfer = transfer
         self._balance = balance
+        self._ledger = ledger or []
         self.lookups: list[tuple[str, str]] = []
 
     def get(self, uid: str, transfer_id: str) -> dict[str, Any] | None:
@@ -36,6 +42,10 @@ class FakeStore:
 
     def balance(self, uid: str) -> Decimal | None:
         return self._balance
+
+    def transfers(self, uid: str) -> list[dict[str, Any]]:
+        self.lookups.append((uid, "*"))
+        return self._ledger
 
 
 class FakeCognito:
@@ -236,3 +246,53 @@ def test_a_session_too_malformed_to_send_is_a_failed_verification() -> None:
 
 def test_the_handler_module_exposes_the_lambda_entry_point() -> None:
     assert callable(handler.lambda_handler)
+
+
+class TestAccount:
+    ACCOUNT = "GET /account"
+
+    def _deps(self, store: FakeStore) -> Dependencies:
+        return Dependencies(store, FakeCognito(), FakeSfn(), "client")
+
+    def _call(self, store: FakeStore) -> tuple[int, dict[str, Any]]:
+        event = {**_event(self.ACCOUNT), "pathParameters": None}
+        response = handle(event, self._deps(store))
+        return response["statusCode"], json.loads(response["body"])
+
+    def _transfer(self, index: int, **extra: Any) -> dict[str, Any]:
+        return {
+            "SK": f"TXN#t{index:07d}",
+            "status": "released",
+            "amount": Decimal("10.50"),
+            "payee_id": "p" * 64,
+            "created_at": Decimal(1_000 + index),
+            **extra,
+        }
+
+    def test_an_undebited_ledger_reports_the_opening_balance(self) -> None:
+        status, body = self._call(FakeStore(None))
+        assert status == 200
+        assert body == {"balance": float(handler.OPENING_BALANCE), "transfers": []}
+
+    def test_the_newest_transfers_come_first_and_are_capped(self) -> None:
+        ledger = [self._transfer(i) for i in range(handler.RECENT_TRANSFERS + 5)]
+        _, body = self._call(FakeStore(None, Decimal("90.00"), ledger))
+        assert body["balance"] == 90.0
+        ids = [t["transfer_id"] for t in body["transfers"]]
+        assert len(ids) == handler.RECENT_TRANSFERS
+        assert ids[0] == f"t{handler.RECENT_TRANSFERS + 4:07d}"
+
+    def test_a_held_transfer_never_exposes_its_task_token(self) -> None:
+        ledger = [self._transfer(1, status="awaiting_step_up", task_token="secret-token")]
+        _, body = self._call(FakeStore(None, None, ledger))
+        assert "secret-token" not in json.dumps(body)
+        assert body["transfers"][0]["status"] == "awaiting_step_up"
+
+    def test_the_account_is_read_from_the_callers_own_ledger(self) -> None:
+        store = FakeStore(None)
+        self._call(store)
+        assert store.lookups == [("user-1", "*")]
+
+    def test_an_unauthenticated_caller_gets_nothing(self) -> None:
+        event = {**_event(self.ACCOUNT, claims={}), "pathParameters": None}
+        assert handle(event, self._deps(FakeStore(None)))["statusCode"] == 401
