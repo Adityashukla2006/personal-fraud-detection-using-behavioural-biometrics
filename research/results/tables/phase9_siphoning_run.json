@@ -1,0 +1,16 @@
+{
+  "started": "2026-09-24T16:17:17.714391+00:00",
+  "finished": "2026-09-24T16:20:25.344315+00:00",
+  "window_start": "2026-09-04T00:00:00+00:00",
+  "days": 20,
+  "victims": 5,
+  "controls": 3,
+  "victims_flagged": 4,
+  "controls_flagged": 0,
+  "victims_restricted": 3,
+  "controls_restricted": 0,
+  "aggregator_runs": 20,
+  "probe_calls": 160,
+  "lake_objects_replayed": 448,
+  "seed": 20260916
+}

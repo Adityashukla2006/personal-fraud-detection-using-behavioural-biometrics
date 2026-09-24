@@ -1,0 +1,9 @@
+subject,role,transfers_sent,money_sent,flag_day,transfers_before_flag,money_before_flag,restrict_day,money_before_restrict,step_up_day,final_siphon_score,final_identity
+s002,victim,10,9000.0,5,3,2700.0,1,900.0,1,0.892351,0.980877
+s003,victim,10,9000.0,5,3,2700.0,,,1,0.803428,0.758571
+s004,victim,10,9000.0,5,3,2700.0,9,4500.0,1,0.9,1.0
+s005,victim,10,9000.0,5,3,2700.0,,,4,0.9,1.0
+s007,victim,10,9000.0,,,,6,2700.0,1,0.5,0.0
+s008,control,10,9000.0,,,,,,1,0.5,0.0
+s010,control,10,9000.0,,,,,,1,0.5,0.0
+s011,control,10,9000.0,,,,,,1,0.5,0.0
