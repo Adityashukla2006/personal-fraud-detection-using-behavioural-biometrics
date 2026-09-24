@@ -9,8 +9,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from fraudcore.adaptation import AdaptationPolicy, displacement
+from fraudcore.adaptation import PROFILE_FEATURES, AdaptationPolicy, displacement
+from fraudcore.features import KeystrokeTiming, vector
+from fraudcore.fusion import FusionModel, fuse
+from fraudcore.policy import Thresholds
+from fraudcore.scoring import CHANNELS, ChannelScore
+from fraudcore.session import pooled_extract
 from research import poisoning
+from simulator import cmu
 
 WIDTH = len(poisoning.FEATURES)
 POLICY = AdaptationPolicy(
@@ -180,10 +186,21 @@ class TestSampling:
         assert not np.array_equal(first, second)
 
     def test_epochs_advance_the_clock_past_the_reanchor_period(self) -> None:
-        span_days = poisoning.timestamp(poisoning.EPOCHS, 0) / poisoning.SECONDS_PER_DAY
+        logins = poisoning.EPOCHS * poisoning.PER_EPOCH
+        span_days = poisoning.timestamp(logins) / poisoning.SECONDS_PER_DAY
         assert span_days > AdaptationPolicy.load().reanchor_days
-        assert poisoning.timestamp(0, 0) == 0.0
-        assert poisoning.timestamp(1, 0) > poisoning.timestamp(0, 9)
+        assert poisoning.timestamp(0) == 0.0
+        assert poisoning.timestamp(10) > poisoning.timestamp(9)
+
+    def test_the_recorded_calendar_puts_each_recording_day_on_its_own_day(self) -> None:
+        day = poisoning.SECONDS_PER_DAY
+        moments = [poisoning.timestamp(i, poisoning.RECORDED, per_day=12) for i in range(48)]
+        assert {int(moment // day) for moment in moments} == {0, 1, 2, 3}
+        assert poisoning.timestamp(12, poisoning.RECORDED, per_day=12) == day
+
+    def test_an_unknown_calendar_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="unknown calendar"):
+            poisoning.timestamp(1, "lunar")
 
 
 class TestBootstrap:
@@ -221,10 +238,16 @@ class TestBootstrap:
 
 class TestArms:
     def test_the_primary_arm_is_the_deployed_path(self) -> None:
-        primary = next(arm for arm in poisoning.ARMS if arm.name == poisoning.PRIMARY_ARM)
-        assert primary.threshold == poisoning.RECALCULATED_THRESHOLD
+        primary = poisoning.primary_arm(poisoning.ARMS)
+        assert primary.name == poisoning.PRIMARY_ARM
+        assert primary.threshold == poisoning.GLOBAL_THRESHOLD
         assert primary.regime == poisoning.STEPUP_ONLY
         assert primary.attacker_tau == poisoning.STEP_UP
+        assert primary.unit == poisoning.POOLED
+
+    def test_without_the_live_arm_the_production_arm_is_primary(self) -> None:
+        arms = [arm for arm in poisoning.ARMS if arm.unit == poisoning.REPETITION]
+        assert poisoning.primary_arm(arms).name == "production"
 
     def test_the_legacy_arm_reproduces_the_first_protocol(self) -> None:
         legacy = next(arm for arm in poisoning.ARMS if arm.name == "legacy")
@@ -234,6 +257,51 @@ class TestArms:
 
     def test_the_gated_arm_never_reaches_tau_min(self) -> None:
         assert poisoning.GATED_ARM.attacker_tau < AdaptationPolicy.load().tau_min
+
+
+class TestLiveThreshold:
+    def test_behaviour_alone_at_the_threshold_reaches_exactly_step_up(self) -> None:
+        # Known answer from the deployed fusion itself: every other channel quiet and confident.
+        threshold = poisoning.live_threshold()
+        scores = {name: ChannelScore(0.0, 1.0) for name in CHANNELS}
+        scores["behaviour"] = ChannelScore(threshold, 1.0)
+        risk = fuse(FusionModel.load(), scores).risk
+        assert risk == pytest.approx(Thresholds.load().step_up, abs=1e-6)
+
+    def test_a_global_threshold_ignores_the_profile(self) -> None:
+        threshold = poisoning.Threshold(poisoning.GLOBAL_THRESHOLD, np.zeros((1, WIDTH)), 40.0)
+        moved = poisoning.reference([9.0] * WIDTH, [9.0] * WIDTH)
+        assert threshold.of(moved) == 40.0
+
+
+class TestPooling:
+    def _repetitions(self, count: int) -> list[cmu.Repetition]:
+        return [
+            cmu.Repetition("s", day, rep, (0.1, 0.1 + rep / 1000, 0.12), (0.3, 0.25), (0.2, 0.15))
+            for day in (1, 2)
+            for rep in range(count)
+        ]
+
+    def test_repetitions_pool_in_fours_and_a_short_remainder_is_dropped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repetitions = self._repetitions(10)
+        monkeypatch.setattr(cmu, "load", lambda: {"s": repetitions})
+        pooled = poisoning.pooled_sessions()
+        assert {day: len(rows) for day, rows in pooled["s"].items()} == {1: 2, 2: 2}
+
+    def test_a_pooled_login_is_the_live_scorers_vector(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repetitions = self._repetitions(4)
+        monkeypatch.setattr(cmu, "load", lambda: {"s": repetitions})
+        pooled = poisoning.pooled_sessions()
+        fields = [
+            KeystrokeTiming(tuple(f["hold"]), tuple(f["down_down"]), tuple(f["up_down"]))
+            for f in (cmu.field(r) for r in repetitions[:4])
+        ]
+        expected = vector(pooled_extract(fields), PROFILE_FEATURES)
+        assert pooled["s"][1][0] == pytest.approx(expected)
 
 
 def _sessions(centre: float, seed: int) -> dict[int, np.ndarray]:
@@ -268,6 +336,10 @@ def test_a_full_run_reports_every_metric() -> None:
         "regime",
         "seed",
         "threshold_ratio",
+        "reanchors",
+        "unit",
+        "calendar",
+        "attacker_pass_rate",
     }
     assert len(result["trajectory"]) == poisoning.EPOCHS
     assert result["displacement"] == 0.0
@@ -314,6 +386,72 @@ def test_the_signin_regime_mixes_routine_sessions_with_step_ups(
 ) -> None:
     seen = _trust_seen(monkeypatch, regime=poisoning.SIGNIN, attacker_tau=poisoning.HIJACKED)
     assert set(seen) == {poisoning.ROUTINE, poisoning.STEP_UP}
+
+
+def _observations(monkeypatch: pytest.MonkeyPatch, **overrides: object) -> int:
+    counted = _trust_seen(monkeypatch, **overrides)
+    return len(counted)
+
+
+@pytest.mark.parametrize(("rate", "attack_sessions"), [(0.0, 0), (1.0, 200)])
+def test_a_failed_step_up_never_reaches_adaptation(
+    monkeypatch: pytest.MonkeyPatch, rate: float, attack_sessions: int
+) -> None:
+    seen = _observations(
+        monkeypatch,
+        regime=poisoning.STEPUP_ONLY,
+        attacker_tau=poisoning.STEP_UP,
+        attacker_pass_rate=rate,
+    )
+    assert seen == 200 + attack_sessions
+
+
+def test_the_pass_rate_does_not_touch_the_signin_regime(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _observations(monkeypatch, regime=poisoning.SIGNIN, attacker_pass_rate=0.0) == 400
+
+
+def test_a_quorum_re_anchors_less_often_when_step_ups_share_a_day() -> None:
+    # On the recorded calendar a rebuild's twenty sessions share a day, so a quorum of three days
+    # cannot form inside one; re-anchoring on any step-up re-anchors at every rebuild.
+    common = {
+        "policy": "P3",
+        "regime": poisoning.STEPUP_ONLY,
+        "attacker_tau": poisoning.STEP_UP,
+        "calendar": poisoning.RECORDED,
+    }
+    single = poisoning.run(_job(**common))
+    quorum = poisoning.run(_job(**common, reanchor_stepups=3, reanchor_stepup_days=3))
+    assert single["reanchors"] == 20
+    assert quorum["reanchors"] < single["reanchors"]
+
+
+def test_the_quorum_variants_reanchor_on_three_step_ups_over_three_days() -> None:
+    quorum = {c.name: c.quorum for c in poisoning.CONFIGS}
+    assert quorum["quorum"] == quorum["combined_quorum"] == (3, 3)
+    assert quorum["combined"] == quorum["baseline"] == (1, 1)
+
+
+def test_the_live_arm_runs_on_pooled_sessions_with_pooled_budgets() -> None:
+    config = next(c for c in poisoning.CONFIGS if c.name == "combined_quorum")
+    repetitions = {name: _sessions(i, 10 * i) for i, name in enumerate(("a", "b", "c"))}
+    pooled = {
+        name: {d: rows[:12] for d, rows in days.items()} for name, days in repetitions.items()
+    }
+    jobs = poisoning.build_jobs(
+        {poisoning.REPETITION: repetitions, poisoning.POOLED: pooled},
+        ["a"],
+        {poisoning.REPETITION: (1.0, 0.0), poisoning.POOLED: (2.0, 0.0)},
+        config,
+    )
+    live = [job for job in jobs if job.arm == "live"]
+    assert live and all(job.unit == poisoning.POOLED for job in live)
+    assert all(len(job.victim_sessions[3]) == 12 for job in live)
+    assert {job.budget for job in live if job.multiplier == 1.0} == {2.0}
+    assert all((job.reanchor_stepups, job.reanchor_stepup_days) == (3, 3) for job in jobs)
+    swept = {job.attacker_pass_rate for job in live}
+    assert swept == {1.0, *poisoning.STEPUP_PASS_RATES}
+    assert any(job.calendar == poisoning.RECORDED for job in live)
+    assert all(job.calendar == poisoning.STRETCHED for job in jobs if job.arm != "live")
 
 
 def test_a_different_seed_gives_a_different_run() -> None:

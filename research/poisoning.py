@@ -53,11 +53,42 @@ Each arm is a protocol, not a policy, and every policy is run under each:
     legacy         frozen threshold, signin regime, attacker tau 0.6 (the first reported protocol)
     recalculated   threshold recalibrated against the current profile, otherwise legacy
     production     recalculated threshold, stepup_only regime, attacker tau 1.0
+    live           the deployed scorer: pooled sessions, one global threshold, stepup_only, tau 1.0
 
 ``legacy`` holds the operating threshold at the one computed from the enrolment profile, so every
-later acceptance test judges a profile that has moved by a threshold that has not. A live system
-recalibrates, and so does ``recalculated``; the difference between the two is the size of that
-confound. ``production`` is the deployed path and is the arm the figures and any adoption come from.
+later acceptance test judges a profile that has moved by a threshold that has not. ``recalculated``
+recomputes a per-user threshold at a 5% false rejection rate; the difference between the two is the
+size of that confound.
+
+``production`` still differs from what is deployed in two ways, and ``live`` removes both. First,
+the deployed system has no per-user threshold: the behavioural channel enters fusion standardised by
+one global mean and scale, so behaviour alone reaches step-up at a single score for everyone
+(``live_threshold``, solved from ``models.json``). Second, a deployed session is not one repetition:
+the scorer pools the four fields of a transfer form into one vector and scores it against a profile
+built from pooled enrolment typing, which is also how the fusion weights were fitted. ``live``
+therefore pools four consecutive CMU repetitions into one login (``pooled_sessions``), about twelve
+per recording day, and calibrates its budgets from pooled drift. It is the primary arm: the figures,
+the sweeps and any adoption come from it.
+
+Pre-registered, before any run: the re-anchor quorum
+----------------------------------------------------
+Under the deployed trigger every adapting session is a step-up, and a single step-up re-anchored,
+so the budget was refreshed on every update and never bound (the ``production`` result that P3 does
+no better than P2). The fix under test: a step-up re-anchors only as part of a quorum of three
+step-ups since the anchor, on three distinct calendar days (``fraudcore.adaptation.stepup_quorum``).
+The two variants below were written here before either was run, and both are reported whatever they
+show. The expected weakness, stated in advance: at ten logins a week every day has a login, so an
+attacker who passes every step-up assembles a quorum within about four logins, and the rule should
+bind mainly in the ``signin`` arms, where genuine step-ups are one login in ten.
+
+Two further measurements, on the primary arm only:
+
+    step-up sweep   the fraction of the attacker's sessions that pass a step-up (0, 0.1, 0.25, 0.5;
+                    1.0 is the main run). A failed step-up never reaches adaptation, so this is the
+                    cost of poisoning in authenticator compromises.
+    calendar        P3 on the recorded calendar, where the stream spans the four recording days it
+                    was typed on, beside the stretched one. The quiet-period re-anchor cannot fire
+                    in four days, and the quorum can see at most four distinct days.
 
 Seeds and intervals
 -------------------
@@ -86,6 +117,11 @@ whatever it shows. Each changes one thing from the baseline, and the last two co
                      the attacker's budget
     combined         median budget, frozen scale and verified anchor together
     combined_raw     the combined variant over the 31 raw timings
+    quorum           baseline, re-anchoring only on three step-ups over three days
+    combined_quorum  combined, re-anchoring only on three step-ups over three days
+
+Every variant before ``quorum`` re-anchors on any single step-up, as the deployed policy did when it
+was run.
 
 The live system can only use the 9 aggregates (raw per-key timings mean nothing once the field is
 not a fixed password), so the raw variants are evidence about representation, and only a
@@ -98,6 +134,9 @@ one multiplier.
 Usage, from the repository root::
 
     python -m research.poisoning [--configs baseline combined] [--seeds 5] [--adopt combined]
+
+Adoption writes the primary arm's budgets, which for ``live`` are calibrated from pooled sessions,
+because the deployed profile is built from pooled sessions.
 """
 
 from __future__ import annotations
@@ -105,9 +144,10 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 import random
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -122,6 +162,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from fraudcore.adaptation import (  # noqa: E402
+    FULL_TRUST,
     PROFILE_FEATURES,
     SECONDS_PER_DAY,
     AdaptationPolicy,
@@ -135,7 +176,8 @@ from fraudcore.adaptation import (  # noqa: E402
     scale_displacement,
     trust,
 )
-from fraudcore.fusion import MODELS_PATH  # noqa: E402
+from fraudcore.fusion import MODELS_PATH, FusionModel  # noqa: E402
+from fraudcore.policy import Thresholds  # noqa: E402
 from fraudcore.scoring import ReferenceProfile  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -169,7 +211,20 @@ SEEDS = 5
 BOOTSTRAP_RESAMPLES = 2000
 BOOTSTRAP_ALPHA = 0.05
 # Varying the schedule and the sampling costs a full run each, so only these carry every seed.
-MULTI_SEED_CONFIGS = ("baseline", "combined")
+MULTI_SEED_CONFIGS = ("baseline", "combined", "quorum", "combined_quorum")
+# The re-anchor quorum under test: step-ups since the anchor, and distinct days among them.
+QUORUM_STEPUPS = 3
+QUORUM_DAYS = 3
+# The live scorer pools the four fields of one transfer form into a session.
+POOL_SIZE = 4
+# Fractions of the attacker's sessions that pass a step-up, beside the main run's 1.0.
+STEPUP_PASS_RATES = (0.0, 0.1, 0.25, 0.5)
+
+REPETITION = "repetition"
+POOLED = "pooled"
+STRETCHED = "stretched"
+RECORDED = "recorded"
+
 # A scale budget of zero freezes the scale in fraudcore, without counting as saturation.
 FROZEN_SCALE_BUDGET = 0.0
 
@@ -195,6 +250,12 @@ class Config:
     percentile: int
     scale: str
     anchor: str
+    reanchor: str = "single"
+
+    @property
+    def quorum(self) -> tuple[int, int]:
+        """Step-ups and distinct days a re-anchor needs."""
+        return (QUORUM_STEPUPS, QUORUM_DAYS) if self.reanchor == "quorum" else (1, 1)
 
 
 @dataclass(frozen=True)
@@ -205,19 +266,24 @@ class Arm:
     threshold: str
     regime: str
     attacker_tau: float
+    unit: str = REPETITION
 
 
 SIGNIN = "signin"
 STEPUP_ONLY = "stepup_only"
 FROZEN_THRESHOLD = "frozen"
 RECALCULATED_THRESHOLD = "recalculated"
+GLOBAL_THRESHOLD = "global"
 
 ARMS: tuple[Arm, ...] = (
     Arm("legacy", FROZEN_THRESHOLD, SIGNIN, HIJACKED),
     Arm("recalculated", RECALCULATED_THRESHOLD, SIGNIN, HIJACKED),
     Arm("production", RECALCULATED_THRESHOLD, STEPUP_ONLY, STEP_UP),
+    Arm("live", GLOBAL_THRESHOLD, STEPUP_ONLY, STEP_UP, POOLED),
 )
-PRIMARY_ARM = "production"
+PRIMARY_ARM = "live"
+# The live arm needs the deployed 9-feature representation; a raw-feature variant falls back here.
+FALLBACK_ARM = "production"
 # The gated line: an attacker with only a password never reaches tau_min, whatever the arm.
 GATED_ARM = Arm("password_only", RECALCULATED_THRESHOLD, SIGNIN, PASSWORD_ONLY)
 
@@ -230,7 +296,32 @@ CONFIGS: tuple[Config, ...] = (
     Config("verified_anchor", "set_b", 95, "adapted", "verified"),
     Config("combined", "set_b", 50, "frozen", "verified"),
     Config("combined_raw", "set_a", 50, "frozen", "verified"),
+    Config("quorum", "set_b", 95, "adapted", "projected", "quorum"),
+    Config("combined_quorum", "set_b", 50, "frozen", "verified", "quorum"),
 )
+
+
+def primary_arm(arms: Sequence[Arm]) -> Arm:
+    """The arm sweeps and figures use: ``live`` where it ran, else ``production``."""
+    names = {arm.name: arm for arm in arms}
+    return names.get(PRIMARY_ARM) or names.get(FALLBACK_ARM) or arms[0]
+
+
+def live_threshold(path: Path = MODELS_PATH) -> float:
+    """The behaviour score at which a session with every other channel quiet reaches step-up.
+
+    The deployed system has no per-user threshold. Behaviour enters fusion standardised by one
+    global mean and scale, and a quiet non-behavioural channel contributes nothing, so step-up is
+    reached where ``intercept + weight * z`` crosses the logit of the step-up risk threshold.
+    """
+    model = FusionModel.load(path)
+    thresholds = Thresholds.load(path)
+    channel = model.channels["behaviour"]
+    logit = math.log(thresholds.step_up / (100 - thresholds.step_up))
+    z = (logit - model.intercept) / channel.weight
+    if not 0 < z <= model.z_limit:
+        raise ValueError("behaviour alone cannot reach step-up under this model")
+    return channel.mean + z * channel.scale
 
 
 def reference(
@@ -270,7 +361,7 @@ class Threshold:
     """
 
     def __init__(self, mode: str, calibration: np.ndarray, initial: float) -> None:
-        if mode not in (FROZEN_THRESHOLD, RECALCULATED_THRESHOLD):
+        if mode not in (FROZEN_THRESHOLD, RECALCULATED_THRESHOLD, GLOBAL_THRESHOLD):
             raise ValueError(f"unknown threshold mode {mode!r}")
         self.mode = mode
         self.calibration = calibration
@@ -279,7 +370,8 @@ class Threshold:
         self._value = initial
 
     def of(self, profile: ReferenceProfile) -> float:
-        if self.mode == FROZEN_THRESHOLD:
+        # A global threshold is one number for every profile, like a frozen one.
+        if self.mode in (FROZEN_THRESHOLD, GLOBAL_THRESHOLD):
             return self.initial
         key = (profile.centre, profile.dispersion)
         if key != self._key:
@@ -304,9 +396,17 @@ def stream(sessions: Sessions, days: Sequence[int], rng: random.Random) -> np.nd
     return np.vstack(blocks)
 
 
-def timestamp(epoch: int, offset: int) -> float:
-    """The clock a simulated login carries, in seconds. See the module docstring."""
-    return (epoch + offset / PER_EPOCH) * EPOCH_DAYS * SECONDS_PER_DAY
+def timestamp(index: int, calendar: str = STRETCHED, per_day: int = 50) -> float:
+    """The clock the ``index``-th simulated login carries, in seconds. See the module docstring.
+
+    Stretched, ``PER_EPOCH`` logins span ``EPOCH_DAYS``. Recorded, each block of ``per_day`` logins,
+    which is one recording day's typing, falls on its own day.
+    """
+    if calendar == STRETCHED:
+        return index / PER_EPOCH * EPOCH_DAYS * SECONDS_PER_DAY
+    if calendar == RECORDED:
+        return index / per_day * SECONDS_PER_DAY
+    raise ValueError(f"unknown calendar {calendar!r}")
 
 
 def engineer(
@@ -394,6 +494,9 @@ class Proposed:
         self.buffer = [BufferedSession(tuple(float(v) for v in row), STEP_UP) for row in enrolment]
         self.pending = 0
         self.batch_tau = 0.0
+        # Times of the step-ups admitted since the last rebuild, which the re-anchor quorum counts.
+        self.stepups: list[float] = []
+        self.reanchors = 0
 
     @property
     def saturations(self) -> int:
@@ -409,11 +512,16 @@ class Proposed:
         self.buffer = list(bounded([*self.buffer, session], self.policy.buffer_capacity))
         self.pending += 1
         self.batch_tau = max(self.batch_tau, tau)
+        if tau >= FULL_TRUST:
+            self.stepups.append(now)
         if self.pending >= self.policy.rebuild_every:
-            result = rebuild(self.profile, self.buffer, self.batch_tau, now, self.policy)
+            result = rebuild(
+                self.profile, self.buffer, self.batch_tau, now, self.policy, self.stepups
+            )
             if result.profile is not None:
                 self.profile = result.profile
-            self.pending, self.batch_tau = 0, 0.0
+            self.reanchors += int(result.reanchored)
+            self.pending, self.batch_tau, self.stepups = 0, 0.0, []
 
 
 def make_learner(
@@ -453,6 +561,11 @@ class Job:
     arm: str = "legacy"
     threshold_mode: str = FROZEN_THRESHOLD
     regime: str = SIGNIN
+    reanchor_stepups: int = 1
+    reanchor_stepup_days: int = 1
+    unit: str = REPETITION
+    calendar: str = STRETCHED
+    attacker_pass_rate: float = 1.0
 
 
 def run(job: Job) -> dict[str, Any]:
@@ -461,6 +574,8 @@ def run(job: Job) -> dict[str, Any]:
         budget=job.budget,
         scale_budget=job.scale_budget,
         anchor=job.anchor,  # type: ignore[arg-type]
+        reanchor_stepups=job.reanchor_stepups,
+        reanchor_stepup_days=job.reanchor_stepup_days,
     )
     victim, attacker = job.victim_sessions, job.attacker_sessions
     features = job.features
@@ -468,7 +583,10 @@ def run(job: Job) -> dict[str, Any]:
     initial = enrol(victim[ENROLMENT_SESSION], policy)
     initial_reference = reference(initial.centre, initial.scale, features)
     calibration = victim[THRESHOLD_SESSION]
-    initial_threshold = operating_threshold(initial_reference, calibration)
+    if job.threshold_mode == GLOBAL_THRESHOLD:
+        initial_threshold = live_threshold()
+    else:
+        initial_threshold = operating_threshold(initial_reference, calibration)
     threshold = Threshold(job.threshold_mode, calibration, initial_threshold)
     learner = make_learner(
         job.policy, initial, victim[ENROLMENT_SESSION], threshold, policy, features
@@ -482,21 +600,28 @@ def run(job: Job) -> dict[str, Any]:
     held_out = np.vstack([victim[s] for s in HELD_OUT_SESSIONS])
     natural = np.vstack([attacker[s] for s in ATTACKER_HELD_OUT_SESSIONS])
 
+    # Whether each attack session passes its step-up has a generator of its own, so sweeping the
+    # pass rate leaves every other draw of the run unchanged.
+    passes = random.Random(job.seed * 7919 + 1)
+    per_day = len(victim[GENUINE_SESSIONS[0]])
+    logins = min(len(genuine), len(attacks))
+
     trajectory = []
-    for epoch in range(EPOCHS):
-        for offset in range(PER_EPOCH):
-            index = epoch * PER_EPOCH + offset
-            now = timestamp(epoch, offset)
-            if job.regime == STEPUP_ONLY:
-                genuine_tau = STEP_UP
-            else:
-                genuine_tau = STEP_UP if rng.random() < STEP_UP_RATE else ROUTINE
-            learner.observe(genuine[index], genuine_tau, now)
-            current = learner.reference()
-            crafted = engineer(attacks[index], current, threshold.of(current))
-            learner.observe(crafted, job.attacker_tau, now)
+    for index in range(logins):
+        now = timestamp(index, job.calendar, per_day)
+        if job.regime == STEPUP_ONLY:
+            genuine_tau = STEP_UP
+        else:
+            genuine_tau = STEP_UP if rng.random() < STEP_UP_RATE else ROUTINE
+        learner.observe(genuine[index], genuine_tau, now)
         current = learner.reference()
-        trajectory.append(acceptance(current, natural, threshold.of(current)))
+        crafted = engineer(attacks[index], current, threshold.of(current))
+        # Deployed, only a passed step-up reaches adaptation; a failed one is simply never seen.
+        if job.regime != STEPUP_ONLY or passes.random() < job.attacker_pass_rate:
+            learner.observe(crafted, job.attacker_tau, now)
+        if (index + 1) % PER_EPOCH == 0 or index + 1 == logins:
+            current = learner.reference()
+            trajectory.append(acceptance(current, natural, threshold.of(current)))
 
     final = learner.reference()
     final_threshold = threshold.of(final)
@@ -505,6 +630,10 @@ def run(job: Job) -> dict[str, Any]:
         "arm": job.arm,
         "threshold_mode": job.threshold_mode,
         "regime": job.regime,
+        "unit": job.unit,
+        "calendar": job.calendar,
+        "attacker_pass_rate": job.attacker_pass_rate,
+        "reanchor_stepups": job.reanchor_stepups,
         "victim": job.victim,
         "attacker": job.attacker,
         "policy": job.policy,
@@ -520,6 +649,7 @@ def run(job: Job) -> dict[str, Any]:
         "displacement": displacement(final.centre, initial.centre, initial.scale),
         "scale_change": scale_displacement(final.dispersion, initial.scale),
         "saturations": learner.saturations,
+        "reanchors": getattr(learner, "reanchors", 0),
         "trajectory": trajectory,
     }
 
@@ -544,15 +674,17 @@ def calibrate_budgets(
 
 
 def build_jobs(
-    sessions: dict[str, Sessions],
+    sessions: Mapping[str, dict[str, Sessions]],
     victims: list[str],
-    budgets: tuple[float, float],
+    budgets: Mapping[str, tuple[float, float]],
     config: Config = CONFIGS[0],
     features: Sequence[str] = FEATURES,
     arms: Sequence[Arm] = ARMS,
     seeds: int = 1,
 ) -> list[Job]:
-    everyone = sorted(sessions)
+    """Every run for one variant. ``sessions`` and ``budgets`` are keyed by the arm's unit."""
+    everyone = sorted(sessions[REPETITION])
+    stepups, days = config.quorum
     jobs: list[Job] = []
 
     def job(
@@ -562,17 +694,21 @@ def build_jobs(
         policy: str,
         arm: Arm,
         multiplier: float = 1.0,
+        calendar: str = STRETCHED,
+        pass_rate: float = 1.0,
     ) -> Job:
+        unit_sessions = sessions[arm.unit]
+        centre, scale = budgets[arm.unit]
         return Job(
             victim=victim,
             attacker=attacker,
             policy=policy,
-            budget=budgets[0] * multiplier,
-            scale_budget=budgets[1] * multiplier,
+            budget=centre * multiplier,
+            scale_budget=scale * multiplier,
             multiplier=multiplier,
             attacker_tau=arm.attacker_tau,
-            victim_sessions=sessions[victim],
-            attacker_sessions=sessions[attacker],
+            victim_sessions=unit_sessions[victim],
+            attacker_sessions=unit_sessions[attacker],
             seed=seed,
             features=tuple(features),
             anchor=config.anchor,
@@ -580,9 +716,14 @@ def build_jobs(
             arm=arm.name,
             threshold_mode=arm.threshold,
             regime=arm.regime,
+            reanchor_stepups=stepups,
+            reanchor_stepup_days=days,
+            unit=arm.unit,
+            calendar=calendar,
+            attacker_pass_rate=pass_rate,
         )
 
-    primary = next((arm for arm in arms if arm.name == PRIMARY_ARM), arms[0])
+    primary = primary_arm(arms)
     for victim_index, victim in enumerate(victims):
         position = everyone.index(victim)
         for attacker_index in range(1, ATTACKERS_PER_VICTIM + 1):
@@ -599,6 +740,14 @@ def build_jobs(
                         for multiplier in BUDGET_MULTIPLIERS
                         if multiplier != 1.0
                     ]
+                # P2 isolates the gate, so the sweep shows what the budget adds at each rate.
+                if primary.regime == STEPUP_ONLY:
+                    jobs += [
+                        job(victim, attacker, seed, policy, primary, pass_rate=rate)
+                        for rate in STEPUP_PASS_RATES
+                        for policy in ("P2", "P3")
+                    ]
+                jobs.append(job(victim, attacker, seed, "P3", primary, calendar=RECORDED))
     return jobs
 
 
@@ -742,6 +891,43 @@ def plot_tradeoff(
     plt.close(fig)
 
 
+def plot_stepup(stepup: pd.DataFrame, destination: Path, title: str = "") -> None:
+    """Impersonation against the share of the attacker's sessions that pass a step-up."""
+    fig, ax = plt.subplots(figsize=(7, 4.4), dpi=150)
+    fig.patch.set_facecolor(SURFACE)
+    for policy in ("P2", "P3"):
+        rows = stepup[stepup["policy"] == policy].sort_values("attacker_pass_rate")
+        mean = rows["impersonation_mean"].to_numpy(dtype=float)
+        ax.errorbar(
+            rows["attacker_pass_rate"],
+            mean,
+            yerr=np.vstack(
+                [
+                    np.clip(mean - rows["impersonation_lo"].to_numpy(dtype=float), 0, None),
+                    np.clip(rows["impersonation_hi"].to_numpy(dtype=float) - mean, 0, None),
+                ]
+            ),
+            color=POLICY_COLOURS[policy],
+            ecolor=INK_MUTED,
+            elinewidth=1,
+            capsize=3,
+            linewidth=2,
+            marker="o",
+            markersize=5,
+            label=policy,
+        )
+    ax.set_xlabel("Share of the attacker's sessions that pass a step-up", color=INK_SECONDARY)
+    ax.set_ylabel("Impersonation success after poisoning", color=INK_SECONDARY)
+    ax.set_title(f"Poisoning against step-up compromise{title}", loc="left", color=INK, fontsize=10)
+    ax.set_xlim(-0.03, 1.03)
+    ax.set_ylim(0, 1)
+    ax.legend(frameon=False, fontsize=8, labelcolor=INK_SECONDARY)
+    _style(ax)
+    fig.tight_layout()
+    fig.savefig(destination, facecolor=SURFACE)
+    plt.close(fig)
+
+
 def plot_variants(variants: pd.DataFrame, destination: Path) -> None:
     """P3 against P0 for every variant: impersonation, and false rejection under drift."""
     fig, (left, right) = plt.subplots(1, 2, figsize=(11, 4.8), dpi=150, sharey=True)
@@ -789,19 +975,66 @@ def write_budgets(
     scale_budget: float,
     samples: int,
     config: Config,
+    arm: Arm,
     path: Path = MODELS_PATH,
 ) -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
+    stepups, days = config.quorum
     data["adaptation"]["budget"] = round(budget, 4)
     data["adaptation"]["scale_budget"] = round(scale_budget, 4)
     data["adaptation"]["anchor"] = config.anchor
+    data["adaptation"]["reanchor_stepups"] = stepups
+    data["adaptation"]["reanchor_stepup_days"] = days
     data["adaptation"]["budget_status"] = (
         f"adopted from research/poisoning.py variant '{config.name}': "
         f"{config.percentile}th percentile of {samples} consecutive-session drifts "
-        f"across the 51 CMU subjects; scale {config.scale}; anchor {config.anchor}; "
-        f"evaluated on the '{PRIMARY_ARM}' arm"
+        f"across the 51 CMU subjects, in {arm.unit} sessions; scale {config.scale}; "
+        f"anchor {config.anchor}; re-anchor on {stepups} step-ups over {days} days; "
+        f"evaluated on the '{arm.name}' arm"
     )
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def pooled_sessions() -> dict[str, Sessions]:
+    """Every subject's typing as the live scorer sees it: one login per ``POOL_SIZE`` repetitions.
+
+    Consecutive repetitions of a recording day are pooled with ``fraudcore.session.pooled_extract``
+    into one 9-feature vector, the way the live store pools a transfer form's fields and the way
+    ``research/fit_fusion.py`` built the sessions the fusion weights were fitted on. A day's
+    remainder short of a full pool is dropped.
+    """
+    from fraudcore.features import KeystrokeTiming, vector
+    from fraudcore.session import pooled_extract
+    from simulator import cmu
+
+    def timing(entry: Mapping[str, Any]) -> KeystrokeTiming:
+        return KeystrokeTiming(
+            hold=tuple(entry["hold"]),
+            down_down=tuple(entry["down_down"]),
+            up_down=tuple(entry["up_down"]),
+            backspaces=int(entry["backspaces"]),
+            corrections=int(entry["corrections"]),
+            pastes=int(entry["pastes"]),
+        )
+
+    pooled: dict[str, Sessions] = {}
+    for subject, repetitions in cmu.load().items():
+        days: Sessions = {}
+        for day in sorted({r.session for r in repetitions}):
+            sitting = [r for r in repetitions if r.session == day]
+            groups = [
+                sitting[i : i + POOL_SIZE]
+                for i in range(0, len(sitting) - POOL_SIZE + 1, POOL_SIZE)
+            ]
+            days[day] = np.array(
+                [
+                    vector(pooled_extract([timing(cmu.field(r)) for r in group]), FEATURES)
+                    for group in groups
+                ],
+                dtype=float,
+            )
+        pooled[subject] = days
+    return pooled
 
 
 def load_sessions(columns: Sequence[str] | None = None) -> dict[str, Sessions]:
@@ -857,8 +1090,15 @@ def with_intervals(
     return pd.concat([frame.reset_index(drop=True), pd.DataFrame(bounds)], axis=1)
 
 
-def summarise(results: pd.DataFrame, victims: list[str]) -> dict[str, pd.DataFrame]:
-    main_runs = results[(results["arm"] != GATED_ARM.name) & (results["multiplier"] == 1.0)]
+def summarise(
+    results: pd.DataFrame, victims: list[str], primary: str = PRIMARY_ARM
+) -> dict[str, pd.DataFrame]:
+    standard = (
+        (results["multiplier"] == 1.0)
+        & (results["attacker_pass_rate"] == 1.0)
+        & (results["calendar"] == STRETCHED)
+    )
+    main_runs = results[(results["arm"] != GATED_ARM.name) & standard]
     summary = (
         main_runs.groupby(["arm", "policy"])
         .agg(
@@ -871,6 +1111,7 @@ def summarise(results: pd.DataFrame, victims: list[str]) -> dict[str, pd.DataFra
             displacement_median=("displacement", "median"),
             scale_change_median=("scale_change", "median"),
             saturations_mean=("saturations", "mean"),
+            reanchors_mean=("reanchors", "mean"),
         )
         .reset_index()
     )
@@ -886,7 +1127,8 @@ def summarise(results: pd.DataFrame, victims: list[str]) -> dict[str, pd.DataFra
     trajectory = exploded.groupby(["arm", "policy", "epoch"])["impersonation"].mean().reset_index()
 
     sweep_victims = set(victims[::SWEEP_EVERY_NTH_VICTIM])
-    sweep = results[(results["policy"] == "P3") & (results["arm"] == PRIMARY_ARM)]
+    budget_runs = (results["attacker_pass_rate"] == 1.0) & (results["calendar"] == STRETCHED)
+    sweep = results[(results["policy"] == "P3") & (results["arm"] == primary) & budget_runs]
     sweep = sweep[sweep["victim"].isin(sweep_victims)]
     curve = (
         sweep.groupby("multiplier")
@@ -902,7 +1144,7 @@ def summarise(results: pd.DataFrame, victims: list[str]) -> dict[str, pd.DataFra
     )
     curve = with_intervals(sweep, ["multiplier"], ["impersonation", "false_rejection"], curve)
     reference_runs = main_runs[
-        (main_runs["arm"] == PRIMARY_ARM)
+        (main_runs["arm"] == primary)
         & main_runs["victim"].isin(sweep_victims)
         & main_runs["policy"].isin(["P0", "P2"])
     ]
@@ -914,39 +1156,92 @@ def summarise(results: pd.DataFrame, victims: list[str]) -> dict[str, pd.DataFra
         )
         .reset_index()
     )
+    at_primary = results[(results["arm"] == primary) & (results["multiplier"] == 1.0)]
+    stepup_runs = at_primary[at_primary["calendar"] == STRETCHED]
+    stepup_runs = stepup_runs[stepup_runs["policy"].isin(["P2", "P3"])]
+    stepup = (
+        stepup_runs.groupby(["policy", "attacker_pass_rate"])
+        .agg(
+            runs=("victim", "size"),
+            impersonation_mean=("impersonation", "mean"),
+            false_rejection_mean=("false_rejection", "mean"),
+            reanchors_mean=("reanchors", "mean"),
+        )
+        .reset_index()
+    )
+    stepup = with_intervals(
+        stepup_runs, ["policy", "attacker_pass_rate"], ["impersonation"], stepup
+    )
+    calendar_runs = at_primary[
+        (at_primary["policy"] == "P3") & (at_primary["attacker_pass_rate"] == 1.0)
+    ]
+    calendar = (
+        calendar_runs.groupby("calendar")
+        .agg(
+            runs=("victim", "size"),
+            impersonation_mean=("impersonation", "mean"),
+            false_rejection_mean=("false_rejection", "mean"),
+            reanchors_mean=("reanchors", "mean"),
+            saturations_mean=("saturations", "mean"),
+        )
+        .reset_index()
+    )
+    calendar = with_intervals(
+        calendar_runs, ["calendar"], ["impersonation", "false_rejection"], calendar
+    )
     return {
         "summary": summary,
         "trajectory": trajectory,
         "curve": curve,
         "references": references,
+        "stepup": stepup,
+        "calendar": calendar,
         "gated": results[results["arm"] == GATED_ARM.name],
     }
 
 
 def run_config(
     config: Config,
-    sessions: dict[str, Sessions],
+    sessions: Mapping[str, dict[str, Sessions]],
     features: Sequence[str],
     victims: list[str],
     workers: int,
     arms: Sequence[Arm] = ARMS,
     seeds: int = 1,
-) -> tuple[list[dict[str, Any]], float, float, int]:
+) -> tuple[list[dict[str, Any]], dict[str, tuple[float, float, int]], Arm]:
+    """Run one variant. Returns its summary rows, its budgets per unit, and its primary arm."""
+    # Pooled sessions exist only in the deployed 9-feature representation.
+    arms = [arm for arm in arms if arm.unit == REPETITION or config.representation == "set_b"]
+    primary = primary_arm(arms)
     base = replace(AdaptationPolicy.load(), anchor=config.anchor)  # type: ignore[arg-type]
-    budget, scale_budget, centre_drift, _ = calibrate_budgets(sessions, base, config.percentile)
-    if config.scale == "frozen":
-        scale_budget = FROZEN_SCALE_BUDGET
+    budgets: dict[str, tuple[float, float, int]] = {}
+    for unit in sorted({arm.unit for arm in arms}):
+        budget, scale_budget, centre_drift, _ = calibrate_budgets(
+            sessions[unit], base, config.percentile
+        )
+        if config.scale == "frozen":
+            scale_budget = FROZEN_SCALE_BUDGET
+        budgets[unit] = (budget, scale_budget, len(centre_drift))
     print(
         f"\n=== {config.name}: {config.representation}, {len(features)} features, "
         f"p{config.percentile} budgets, scale {config.scale}, anchor {config.anchor}, "
-        f"{seeds} seed(s)"
+        f"re-anchor {config.reanchor}, {seeds} seed(s)"
     )
-    print(f"centre budget {budget:.4f}, scale budget {scale_budget:.4g}")
+    for unit, (budget, scale_budget, _) in budgets.items():
+        print(f"{unit}: centre budget {budget:.4f}, scale budget {scale_budget:.4g}")
 
-    jobs = build_jobs(sessions, victims, (budget, scale_budget), config, features, arms, seeds)
+    jobs = build_jobs(
+        sessions,
+        victims,
+        {unit: (b, s) for unit, (b, s, _) in budgets.items()},
+        config,
+        features,
+        arms,
+        seeds,
+    )
     with ProcessPoolExecutor(max_workers=workers) as pool:
         results = pd.DataFrame(pool.map(run, jobs, chunksize=2))
-    tables = summarise(results, victims)
+    tables = summarise(results, victims, primary.name)
 
     directory = TABLES / "poisoning" / config.name
     directory.mkdir(parents=True, exist_ok=True)
@@ -954,8 +1249,10 @@ def run_config(
     tables["summary"].to_csv(directory / "policies.csv", index=False)
     tables["trajectory"].to_csv(directory / "trajectory.csv", index=False)
     tables["curve"].to_csv(directory / "tradeoff.csv", index=False)
+    tables["stepup"].to_csv(directory / "stepup_sweep.csv", index=False)
+    tables["calendar"].to_csv(directory / "calendar.csv", index=False)
 
-    figure_arm = PRIMARY_ARM if PRIMARY_ARM in set(tables["summary"]["arm"]) else arms[0].name
+    figure_arm = primary.name
     suffix = f" ({config.name}, {figure_arm})"
     plot_policies(
         tables["trajectory"][tables["trajectory"]["arm"] == figure_arm],
@@ -969,6 +1266,7 @@ def run_config(
         FIGURES / "poisoning" / f"{config.name}_tradeoff.png",
         suffix,
     )
+    plot_stepup(tables["stepup"], FIGURES / "poisoning" / f"{config.name}_stepup.png", suffix)
 
     gated = tables["gated"]
     printed = tables["summary"].set_index(["arm", "policy"])
@@ -983,23 +1281,27 @@ def run_config(
         if arm.name not in set(tables["summary"]["arm"]):
             continue
         summary = tables["summary"][tables["summary"]["arm"] == arm.name].set_index("policy")
+        budget, scale_budget, _ = budgets[arm.unit]
         row: dict[str, Any] = {
             "config": config.name,
             "arm": arm.name,
             "threshold": arm.threshold,
             "regime": arm.regime,
             "attacker_tau": arm.attacker_tau,
+            "unit": arm.unit,
             "seeds": seeds,
             "representation": config.representation,
             "features": len(features),
             "percentile": config.percentile,
             "scale": config.scale,
             "anchor": config.anchor,
+            "reanchor": config.reanchor,
             "budget": budget,
             "scale_budget": scale_budget,
             "unpoisoned_impersonation": float(summary.loc["P0", "baseline_impersonation_mean"]),
             "password_only_P3_impersonation": float(gated["impersonation"].mean()),
             "P3_saturations_mean": float(summary.loc["P3", "saturations_mean"]),
+            "P3_reanchors_mean": float(summary.loc["P3", "reanchors_mean"]),
         }
         for policy in POLICIES:
             for metric in ("impersonation", "false_rejection"):
@@ -1007,7 +1309,7 @@ def run_config(
                 row[f"{policy}_{metric}_lo"] = float(summary.loc[policy, f"{metric}_lo"])
                 row[f"{policy}_{metric}_hi"] = float(summary.loc[policy, f"{metric}_hi"])
         rows.append(row)
-    return rows, budget, scale_budget, len(centre_drift)
+    return rows, budgets, primary
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1041,14 +1343,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         for name, columns in representations.items()
         if any(config.representation == name for config in chosen)
     }
+    pooled = pooled_sessions() if any(arm.unit == POOLED for arm in arms) else {}
 
     rows = []
-    adopted: tuple[Config, float, float, int] | None = None
+    adopted: tuple[Config, float, float, int, Arm] | None = None
     for config in chosen:
-        sessions = loaded[config.representation]
-        victims = sorted(sessions)[: args.victims] if args.victims else sorted(sessions)
+        sessions = {REPETITION: loaded[config.representation], POOLED: pooled}
+        everyone = sorted(sessions[REPETITION])
+        victims = everyone[: args.victims] if args.victims else everyone
         seeds = args.seeds if config.name in MULTI_SEED_CONFIGS else 1
-        config_rows, budget, scale_budget, samples = run_config(
+        config_rows, budgets, primary = run_config(
             config,
             sessions,
             representations[config.representation],
@@ -1059,12 +1363,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         rows += config_rows
         if config.name == args.adopt:
-            adopted = (config, budget, scale_budget, samples)
+            budget, scale_budget, samples = budgets[primary.unit]
+            adopted = (config, budget, scale_budget, samples, primary)
 
     variants = pd.DataFrame(rows)
     TABLES.mkdir(parents=True, exist_ok=True)
     variants.to_csv(TABLES / "poisoning_variants.csv", index=False, quoting=csv.QUOTE_MINIMAL)
-    figure_arm = PRIMARY_ARM if PRIMARY_ARM in set(variants["arm"]) else arms[0].name
+    figure_arm = primary_arm(arms).name
     plot_variants(
         variants[variants["arm"] == figure_arm].reset_index(drop=True),
         FIGURES / "poisoning_variants.png",
@@ -1078,20 +1383,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         "P3_false_rejection",
         "password_only_P3_impersonation",
         "P3_saturations_mean",
+        "P3_reanchors_mean",
     ]
     print("\n" + variants[columns].round(4).to_string(index=False))
 
     if args.adopt:
         if adopted is None:
             parser.error(f"--adopt {args.adopt} was not among the variants run")
-        config, budget, scale_budget, samples = adopted
+        config, budget, scale_budget, samples, primary = adopted
         if config.representation != "set_b":
             parser.error("only a 9-feature variant can be adopted by the live system")
         if args.victims:
             parser.error("refusing to adopt budgets from a smoke run")
-        if PRIMARY_ARM not in {arm.name for arm in arms}:
+        if primary.name != PRIMARY_ARM:
             parser.error(f"refusing to adopt without the '{PRIMARY_ARM}' arm")
-        write_budgets(budget, scale_budget, samples, config)
+        write_budgets(budget, scale_budget, samples, config, primary)
         print(f"\nAdopted '{config.name}' into {MODELS_PATH.relative_to(REPO_ROOT)}")
     return 0
 
