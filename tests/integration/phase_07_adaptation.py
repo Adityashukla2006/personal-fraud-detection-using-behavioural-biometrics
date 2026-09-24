@@ -195,8 +195,11 @@ def test_a_poisoning_step_up_moves_the_profile_exactly_one_budget(
     # The session sits hundreds of scaled units away; the budget lets the profile move exactly B.
     assert moved == pytest.approx(AdaptationPolicy.load().budget, rel=1e-6)
     assert profile["saturations"] == 1
-    # A passed step-up is full trust, so the projected position becomes the new anchor.
-    assert profile["anchor_mu"] == profile["mu"]
+    # One step-up is short of the re-anchor quorum: it is recorded, and the anchor stays put, so
+    # the next poisoning step-up is still measured from the same place.
+    assert AdaptationPolicy.load().reanchor_stepups > 1
+    assert profile["anchor_mu"] == [Decimal(str(FAR))] * width
+    assert len(profile["stepups_since_anchor"]) == 1
 
 
 def test_unverified_or_untrusted_sessions_never_change_the_profile(

@@ -41,8 +41,8 @@
     "block": 79.4896
   },
   "adaptation": {
-    "budget_status": "adopted from research/poisoning.py variant 'combined': 50th percentile of 357 consecutive-session drifts across the 51 CMU subjects; scale frozen; anchor verified",
-    "budget": 0.7519,
+    "budget_status": "adopted from research/poisoning.py variant 'combined_quorum': 50th percentile of 357 consecutive-session drifts across the 51 CMU subjects, in pooled sessions; scale frozen; anchor verified; re-anchor on 3 step-ups over 3 days; evaluated on the 'live' arm",
+    "budget": 1.1717,
     "scale_budget": 0.0,
     "tau_min": 0.5,
     "buffer_capacity": 200,
@@ -50,7 +50,7 @@
     "cold_start_sessions": 5,
     "reanchor_days": 30.0,
     "anchor": "verified",
-    "reanchor_stepups": 1,
-    "reanchor_stepup_days": 1
+    "reanchor_stepups": 3,
+    "reanchor_stepup_days": 3
   }
 }
