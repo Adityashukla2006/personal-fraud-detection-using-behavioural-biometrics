@@ -90,6 +90,12 @@ Two further measurements, on the primary arm only:
                     was typed on, beside the stretched one. The quiet-period re-anchor cannot fire
                     in four days, and the quorum can see at most four distinct days.
 
+Amendment, after a three-victim smoke run and before the full run: ``live`` also rebuilds the
+profile after every admitted session, as the adaptation Lambda does, rather than every
+``rebuild_every`` sessions. The smoke run showed the batched cadence leaves a pooled stream only
+four rebuilds, which no deployed profile would see. Every other arm keeps the batched cadence, so
+their numbers stay comparable with the earlier runs.
+
 Seeds and intervals
 -------------------
 Each victim-attacker pair is run under ``--seeds`` seeds, which vary both the step-up schedule and
@@ -267,6 +273,8 @@ class Arm:
     regime: str
     attacker_tau: float
     unit: str = REPETITION
+    # None keeps the policy's batched cadence; the live Lambda rebuilds on every admitted session.
+    rebuild_every: int | None = None
 
 
 SIGNIN = "signin"
@@ -279,7 +287,7 @@ ARMS: tuple[Arm, ...] = (
     Arm("legacy", FROZEN_THRESHOLD, SIGNIN, HIJACKED),
     Arm("recalculated", RECALCULATED_THRESHOLD, SIGNIN, HIJACKED),
     Arm("production", RECALCULATED_THRESHOLD, STEPUP_ONLY, STEP_UP),
-    Arm("live", GLOBAL_THRESHOLD, STEPUP_ONLY, STEP_UP, POOLED),
+    Arm("live", GLOBAL_THRESHOLD, STEPUP_ONLY, STEP_UP, POOLED, rebuild_every=1),
 )
 PRIMARY_ARM = "live"
 # The live arm needs the deployed 9-feature representation; a raw-feature variant falls back here.
@@ -566,6 +574,7 @@ class Job:
     unit: str = REPETITION
     calendar: str = STRETCHED
     attacker_pass_rate: float = 1.0
+    rebuild_every: int | None = None
 
 
 def run(job: Job) -> dict[str, Any]:
@@ -577,6 +586,8 @@ def run(job: Job) -> dict[str, Any]:
         reanchor_stepups=job.reanchor_stepups,
         reanchor_stepup_days=job.reanchor_stepup_days,
     )
+    if job.rebuild_every is not None:
+        policy = replace(policy, rebuild_every=job.rebuild_every)
     victim, attacker = job.victim_sessions, job.attacker_sessions
     features = job.features
 
@@ -721,6 +732,7 @@ def build_jobs(
             unit=arm.unit,
             calendar=calendar,
             attacker_pass_rate=pass_rate,
+            rebuild_every=arm.rebuild_every,
         )
 
     primary = primary_arm(arms)

@@ -244,6 +244,8 @@ class TestArms:
         assert primary.regime == poisoning.STEPUP_ONLY
         assert primary.attacker_tau == poisoning.STEP_UP
         assert primary.unit == poisoning.POOLED
+        # The adaptation Lambda rebuilds after every admitted session.
+        assert primary.rebuild_every == 1
 
     def test_without_the_live_arm_the_production_arm_is_primary(self) -> None:
         arms = [arm for arm in poisoning.ARMS if arm.unit == poisoning.REPETITION]
@@ -452,6 +454,14 @@ def test_the_live_arm_runs_on_pooled_sessions_with_pooled_budgets() -> None:
     assert swept == {1.0, *poisoning.STEPUP_PASS_RATES}
     assert any(job.calendar == poisoning.RECORDED for job in live)
     assert all(job.calendar == poisoning.STRETCHED for job in jobs if job.arm != "live")
+
+
+def test_rebuilding_every_session_re_anchors_at_every_step_up() -> None:
+    common = {"policy": "P3", "regime": poisoning.STEPUP_ONLY, "attacker_tau": poisoning.STEP_UP}
+    batched = poisoning.run(_job(**common))
+    every = poisoning.run(_job(**common, rebuild_every=1))
+    # Batched, 400 admitted sessions make 20 rebuilds; one per session makes 400, each a step-up.
+    assert (batched["reanchors"], every["reanchors"]) == (20, 400)
 
 
 def test_a_different_seed_gives_a_different_run() -> None:
