@@ -125,6 +125,16 @@ Full component-by-component description: [docs/architecture.md](docs/architectur
 | Robustness | Detection rate per attack class (bot typing, replay, impostor) |
 | Cloud | End to end scoring latency at p50 and p95, reported separately for warm and cold Lambda invocations; measured cost per thousand sessions |
 
+## Current State and Deviations from the Proposal
+
+Sections 1 to 7 are the proposal as submitted. Phases 0 to 8 are built, deployed and measured; results are in [docs/results.md](docs/results.md) and the design of record is [docs/architecture.md](docs/architecture.md). Where the build departs from the proposal:
+
+- **Threat model.** Three attacker-driven fraud classes, account takeover, bot and replay, and low-and-slow siphoning, plus profile poisoning as the attack on the adaptation mechanism. O6's impostor sessions are the takeover class.
+- **Features.** `fraudcore` extracts 12 keystroke features, but profiles and scoring use the 9 that the CMU benchmark can measure. The other 3 describe corrections and pastes, which CMU does not contain.
+- **Risk engine.** Scoring fuses five channels (behaviour, automation, transaction, context, payee) by logistic regression, rather than mapping one anomaly score. Behaviour alone can never go beyond step-up.
+- **Adaptation.** Profiles learn only from passkey-verified step-ups delivered by EventBridge, not on a schedule. See docs/results.md section 2 for what that does and does not defend.
+- **Cost.** Not every service is always-free: Step Functions, KMS and X-Ray bill per use. Measured cost is $0.23 per thousand sessions, with nothing billing while idle.
+
 ## 8. Repository Structure
 
 ```
@@ -136,6 +146,7 @@ Full component-by-component description: [docs/architecture.md](docs/architectur
 ├── requirements-dev.txt               pytest and ruff
 ├── docs/
 │   ├── architecture.md                The design of record
+│   ├── results.md                     Measured results, Phases 0 to 8
 │   ├── project-documentation.md       Full source document
 │   ├── literature-survey.md           15 paper survey and thematic synthesis
 │   ├── research-gap.md                RG1 to RG5 and the consolidated gap statement

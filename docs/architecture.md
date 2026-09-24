@@ -208,7 +208,7 @@ Single DynamoDB table, on-demand capacity, one GSI.
 
 | Entity | PK | SK | Key attributes |
 |---|---|---|---|
-| Profile | `USER#<uid>` | `PROFILE#<deviceclass>` | `features[12]`, `mu[12]`, `sigma[12]`, `anchor_mu[12]`, `anchor_sigma[12]`, `anchor_at`, `budget_used`, `n_sessions`, `version` |
+| Profile | `USER#<uid>` | `PROFILE#<deviceclass>` | `features[9]`, `mu[9]`, `sigma[9]`, `anchor_mu[9]`, `anchor_sigma[9]`, `anchor_at`, `last_saturated_at`, `saturations`, `stepups_since_anchor`, `n_sessions`, `version` |
 | Trusted buffer | `USER#<uid>` | `BUF#<deviceclass>#<ts>` | `features[12]`, `trust`, `verified`, TTL 180 days |
 | Device | `USER#<uid>` | `DEV#<device_id>` | `first_seen`, `session_count`, `passkey_bound`, `device_class` |
 | Account | `USER#<uid>` | `ACCOUNT` | `session_count`, `credential_changed_at`, `contact_changed_at` |
@@ -308,13 +308,15 @@ else:
     emit CloudWatch metric budget_saturated{user, device_class}
 ```
 
-Re-anchoring refreshes the budget and occurs when a session arrives with `tau = 1.0`, or after `T` days of continuous non-saturated operation (default 30). At re-anchoring, `mu_anchor <- mu_new`, `sigma_anchor <- sigma_new`, `budget_used <- 0`.
+Re-anchoring refreshes the budget. It occurs when the step-ups since the last anchor form a quorum, `reanchor_stepups` of them on at least `reanchor_stepup_days` distinct calendar days, or after `T` days of continuous non-saturated operation (default 30). At re-anchoring the anchor moves (to the projected profile, or with `anchor = verified` to the robust centre of fully trusted sessions) and the step-up count resets. The profile item stores the step-up times since the anchor as `stepups_since_anchor`; each is the time its verification was first recorded, so a redelivered event counts once.
 
-`B` is calibrated from measured genuine drift, not guessed. CMU's eight sessions per subject were recorded on separate days, so the distribution of genuine per-week displacement across all 51 subjects is computable, and `B` is set at its 95th percentile. Sweeping `B` produces the project's central tradeoff curve.
+The quorum exists because of the deployed trigger (section 5.3). Only verified step-ups reach adaptation, so if any one of them re-anchored, every update would refresh the budget and the budget would never bind against an attacker holding the authenticator. The first version did exactly that, and the `production` arm of section 7.10 measured the consequence: P3 no better than P2.
+
+`B` is calibrated from measured genuine drift, not guessed. CMU's eight sessions per subject were recorded on separate days, so the distribution of genuine displacement between consecutive recording days across all 51 subjects is computable. The unit is one recording-day gap, not a week: CMU does not record how far apart the days were, and `B` is set at its 95th percentile. Sweeping `B` produces the project's central tradeoff curve.
 
 `budget_saturated` is itself a detector. A genuine user drifting naturally rarely saturates the budget; a poisoning attacker saturates it every epoch by construction, because moving as fast as policy permits is their objective.
 
-`sigma` is bounded too, by its own budget `B_sigma` on the mean relative change of the scale, calibrated the same way from genuine drift. Inflating the scale is an evasion: a wide enough variance makes everything look normal and neutralises a budget that only constrains the mean. The two cannot share one budget, because centre displacement is a distance in scaled units and scale displacement is a relative change; the first poisoning run used one number for both, and that run is kept in `research/results` as the record.
+`sigma` is bounded too, by its own budget `B_sigma` on the mean relative change of the scale, calibrated the same way from genuine drift. Inflating the scale is an evasion: a wide enough variance makes everything look normal and neutralises a budget that only constrains the mean. The two cannot share one budget, because centre displacement is a distance in scaled units and scale displacement is a relative change; the first poisoning run used one number for both, and that run is kept in `research/results` as the record. The adopted configuration goes further and freezes the scale (`scale_budget = 0`): on the deployed configuration any adapted scale let the attacker inflate it until every session was accepted (docs/results.md, section 2.2).
 
 ### 7.7 Cold start
 
@@ -336,6 +338,8 @@ Constraint 3 binds. It converts poisoning from an exercise in patience into an e
 
 This is a cost argument supported by measurement, not a proof, and is reported as such.
 
+**Measured against the deployed trigger, the argument holds only in part.** Adaptation is triggered by `stepup.verified` alone (section 5.3), so constraints 1 and 2 never come into play: an attacker without the authenticator reaches no profile at all, and one with it arrives at `tau = 1.0` on every session. Constraint 3 was meant to make each budget's worth of progress cost a step-up, but on the deployed configuration the budget does not bind even with the re-anchor quorum of section 7.6. Step-ups on consecutive days re-anchor every few sessions, and the robust centre moves less than one budget between anchors. What stops poisoning in deployment is the step-up gate itself; the robust estimator and budget add roughly eight points of impersonation resistance over a gated EWMA, with overlapping intervals (docs/results.md, section 2).
+
 ### 7.9 Policies to implement and compare
 
 | Policy | Admission | Estimator | Budget |
@@ -356,10 +360,13 @@ A policy comparison is only as good as the protocol it is measured under, and tw
 | `legacy` | held at enrolment | passkey sign-ins, one in ten a step-up | 0.6 |
 | `recalculated` | recalibrated against the current profile | passkey sign-ins, one in ten a step-up | 0.6 |
 | `production` | recalibrated against the current profile | verified step-ups only | 1.0 |
+| `live` | one global score from the fusion model, per section 8 | verified step-ups only, rebuilt after each | 1.0 |
 
 **The threshold.** The operating threshold is a false rejection rate against genuine typing, so a live system recomputes it when the profile moves. Holding it at enrolment while the profile adapts measures a moved profile with an unmoved ruler: it flatters an attacker who inflates the scale, because every score shrinks and the fixed threshold accepts more, and it penalises one who shifts the centre. `legacy` is kept only because the first reported numbers were produced under it.
 
 **Trust.** The adaptation Lambda is triggered by `stepup.verified` and nothing else (section 5.3), so every session that can reach a profile carries `c_verify = 1.0`. The `signin` regime of the first two arms describes a system that adapts on ordinary sessions, which is the design the literature adapts naively and the one the mechanism is aimed at. The `production` arm describes what is deployed here, and it changes the threat: an attacker at 0.6 never reaches adaptation at all, so the only attacker worth modelling is one holding the authenticator, at 1.0, who re-anchors as well as poisons. Reporting one arm without the other would either overstate the exposure of the deployed system or understate what the mechanism is for.
+
+**The deployed scorer.** `production` still assumes a per-user threshold and single-repetition sessions, and neither is deployed. The live system has no per-user threshold: behaviour alone reaches step-up at one global score solved from the fusion model. And a live session pools the four fields of a transfer form, so `live` pools four CMU repetitions per login and calibrates its budgets from pooled drift. `live` is the primary arm, and adoption into `models.json` comes from it.
 
 Every reported mean carries a 95% bootstrap interval over victim-attacker pairs, across five seeds per pair. The pair is the resampling unit because seeds of one pair share a victim, an attacker and their drift.
 
