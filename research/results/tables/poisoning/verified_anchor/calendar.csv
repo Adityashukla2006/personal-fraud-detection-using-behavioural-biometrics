@@ -1,0 +1,3 @@
+calendar,runs,impersonation_mean,false_rejection_mean,reanchors_mean,saturations_mean,impersonation_lo,impersonation_hi,false_rejection_lo,false_rejection_hi
+recorded,102,1.0,0.0,96.0,0.029411764705882353,1.0,1.0,0.0,0.0
+stretched,102,1.0,0.0,96.0,0.029411764705882353,1.0,1.0,0.0,0.0
