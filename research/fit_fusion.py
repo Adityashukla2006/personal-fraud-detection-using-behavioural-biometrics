@@ -93,7 +93,9 @@ PRIOR_SCALES = {
     "automation": 0.2,
     "transaction": 1.0,
     "context": 0.5,
-    "payee": 0.6,
+    # Doubled from 0.6 when payee confidence stopped following batch freshness. The fit saw every
+    # payee at confidence 0.5 and scale 0.6; confidence 1.0 at 1.2 is the same representation.
+    "payee": 1.2,
 }
 ALERT_Z = 2.0
 TRANSFER_HOUR = 12

@@ -304,17 +304,24 @@ class TestContextChannel:
 
 
 class TestPayeeChannel:
-    def test_score_and_confidence_match_hand_calculation(self) -> None:
-        # score 0.8 + 1.0 + 0.4; freshness 1 - 42 / 168 = 0.75, confidence 0.5 + 0.375
+    def test_score_matches_hand_calculation(self) -> None:
+        # novelty 0.8 + unverified 1.0 + risk 0.4 * weight 2 * freshness (1 - 42 / 168 = 0.75)
         edge = PayeeEdge(days_since_first_seen=6.0, verified=False)
         risk = PayeeRisk(risk_score=0.4, hours_since_computed=42.0)
         result = scoring.payee_channel(edge, risk)
-        assert result.score == pytest.approx(2.2)
-        assert result.confidence == pytest.approx(0.875)
+        assert result.score == pytest.approx(2.4)
+        assert result.confidence == 1.0
 
-    def test_missing_global_risk_halves_confidence(self) -> None:
-        assert scoring.payee_channel(None, None) == ChannelScore(2.0, 0.5)
+    def test_a_new_unverified_payee_is_fully_confident_without_batch_risk(self) -> None:
+        assert scoring.payee_channel(None, None) == ChannelScore(2.0, 1.0)
 
-    def test_risk_exactly_at_the_staleness_limit_adds_no_confidence(self) -> None:
+    def test_batch_risk_never_changes_confidence(self) -> None:
+        # The regression: a benign batch item used to lift confidence and so the novelty alert.
+        fresh = PayeeRisk(risk_score=0.1, hours_since_computed=0.0)
+        with_risk, without = scoring.payee_channel(None, fresh), scoring.payee_channel(None, None)
+        assert with_risk.confidence == without.confidence == 1.0
+        assert with_risk.score == pytest.approx(without.score + 0.1 * scoring.BATCH_PAYEE_WEIGHT)
+
+    def test_risk_exactly_at_the_staleness_limit_adds_nothing(self) -> None:
         risk = PayeeRisk(risk_score=0.4, hours_since_computed=scoring.PAYEE_RISK_STALE_HOURS)
-        assert scoring.payee_channel(None, risk).confidence == 0.5
+        assert scoring.payee_channel(None, risk) == ChannelScore(2.0, 1.0)

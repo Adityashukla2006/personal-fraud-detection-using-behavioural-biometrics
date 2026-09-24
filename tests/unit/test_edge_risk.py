@@ -12,7 +12,7 @@ from fraudcore.features import (
     Transfer,
     payee_features,
 )
-from fraudcore.scoring import PAYEE_RISK_STALE_HOURS, payee_channel
+from fraudcore.scoring import BATCH_PAYEE_WEIGHT, PAYEE_RISK_STALE_HOURS, payee_channel
 from fraudcore.session import SessionEvidence, batch_flag
 
 EDGE = PayeeEdge(days_since_first_seen=10.0, verified=True)
@@ -30,9 +30,10 @@ def test_siphoning_is_a_payee_feature() -> None:
     assert payee_features(EDGE, None, EdgeRisk(0.8, 1.0))["siphoning"] == pytest.approx(0.8)
 
 
-def test_a_fresh_siphoning_signal_raises_the_payee_channel_by_its_score() -> None:
+def test_a_fresh_siphoning_signal_raises_the_payee_channel_by_its_weighted_score() -> None:
     quiet = payee_channel(EDGE, None).score
-    assert payee_channel(EDGE, None, EdgeRisk(0.8, 0.0)).score == pytest.approx(quiet + 0.8)
+    raised = payee_channel(EDGE, None, EdgeRisk(0.8, 0.0)).score
+    assert raised == pytest.approx(quiet + 0.8 * BATCH_PAYEE_WEIGHT)
 
 
 def test_a_stale_siphoning_signal_counts_for_nothing() -> None:
@@ -68,6 +69,4 @@ class TestBatchFlag:
         assert not batch_flag(_evidence(edge_risk=EdgeRisk(0.9, 1.0)))
 
     def test_nothing_corroborates_without_a_transfer(self) -> None:
-        assert not batch_flag(
-            _evidence(transfer=False, edge_risk=EdgeRisk(0.9, 1.0, flagged=True))
-        )
+        assert not batch_flag(_evidence(transfer=False, edge_risk=EdgeRisk(0.9, 1.0, flagged=True)))

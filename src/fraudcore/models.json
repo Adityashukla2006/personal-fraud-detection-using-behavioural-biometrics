@@ -30,7 +30,7 @@
     "payee": {
       "weight": 0.220471,
       "mean": 0.0,
-      "scale": 0.6,
+      "scale": 1.2,
       "alert_z": 2.0
     }
   },

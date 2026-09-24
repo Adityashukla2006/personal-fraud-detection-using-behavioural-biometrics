@@ -39,7 +39,8 @@ MODEL = FusionModel.from_dict(
             "automation": {"weight": 1.5, "mean": 0.1, "scale": 0.2, "alert_z": 2.0},
             "transaction": {"weight": 0.8, "mean": 0.5, "scale": 1.0, "alert_z": 2.0},
             "context": {"weight": 1.0, "mean": 0.2, "scale": 0.5, "alert_z": 2.0},
-            "payee": {"weight": 0.9, "mean": 0.3, "scale": 0.6, "alert_z": 2.0},
+            # Scale 1.2 at full confidence is the representation 0.6 gave at the old confidence 0.5.
+            "payee": {"weight": 0.9, "mean": 0.3, "scale": 1.2, "alert_z": 2.0},
         },
     }
 )

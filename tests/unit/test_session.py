@@ -81,9 +81,9 @@ class TestChannelScores:
 
     def test_a_transfer_brings_the_payee_channel_in(self) -> None:
         scores = channel_scores(_evidence(transfer=Transfer(100.0, 12, 1)))
-        # A never-seen, unverified payee with no global risk: 1 + 1 + 0 at half confidence.
+        # A never-seen, unverified payee with no global risk: 1 + 1 + 0, and live facts are certain.
         assert scores["payee"].score == 2.0
-        assert scores["payee"].confidence == 0.5
+        assert scores["payee"].confidence == 1.0
 
     def test_no_fields_means_no_keystroke_evidence(self) -> None:
         scores = channel_scores(_evidence(fields=()))

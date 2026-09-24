@@ -155,9 +155,7 @@ class ReferenceProfile:
         """
         return sum(abs(deviation) for deviation in self.deviations(session))
 
-    def top_deviations(
-        self, session: Sequence[float], count: int = 3
-    ) -> list[tuple[str, float]]:
+    def top_deviations(self, session: Sequence[float], count: int = 3) -> list[tuple[str, float]]:
         """Return the ``count`` features deviating most, as ``(name, signed_deviation)`` pairs."""
         signed = self.deviations(session)
         ranked = sorted(
@@ -171,8 +169,7 @@ class ReferenceProfile:
         values = [float(value) for value in session]
         if len(values) != len(self.feature_names):
             raise ValueError(
-                f"session has {len(values)} features, "
-                f"profile expects {len(self.feature_names)}"
+                f"session has {len(values)} features, profile expects {len(self.feature_names)}"
             )
         return values
 
@@ -367,24 +364,30 @@ def _freshness(hours_since_computed: float) -> float:
     return _saturating(PAYEE_RISK_STALE_HOURS - hours_since_computed, PAYEE_RISK_STALE_HOURS)
 
 
+# The payee scale doubled when confidence stopped following batch freshness, so batch evidence is
+# weighted double to keep a unit of fresh batch risk exactly as strong as it was: 1 / 0.6 = 2 / 1.2.
+BATCH_PAYEE_WEIGHT = 2.0
+
+
 def payee_channel(
     edge: PayeeEdge | None, risk: PayeeRisk | None, edge_risk: EdgeRisk | None = None
 ) -> ChannelScore:
     """Payee novelty and verification for this user, plus cross-user destination risk.
 
-    The edge facts are read live and always current; the global risk is computed in batch and ages.
-    Half the confidence rests on each, and the global half decays to nothing over a week, so a
-    failing aggregator shrinks the channel instead of freezing a stale verdict into it
+    Novelty and verification are live facts, read from the edge at scoring time, so the channel is
+    always fully confident in them. The batch terms, global destination risk and the siphoning
+    signal, age instead: each is scaled by its own freshness and decays to nothing over a week, so a
+    failing aggregator removes its evidence rather than freezing a stale verdict into the score
     (architecture section 14).
 
-    The batch siphoning signal for this user's payments to the payee ages the same way, so a signal
-    a week old contributes nothing rather than a frozen verdict.
+    Confidence once depended on the batch layer too, at 0.5 plus half the global risk's freshness.
+    That made a new payee's novelty alert only once the aggregator had scored the payee for anyone,
+    so a genuine user paying a payee someone else had recently paid was blocked where one paying an
+    unscored payee was only stepped up (docs/results.md, open issue 3).
     """
-    freshness = 0.0 if risk is None else _freshness(risk.hours_since_computed)
     values = payee_features(edge, risk, edge_risk)
+    risk_freshness = 0.0 if risk is None else _freshness(risk.hours_since_computed)
+    values["global_risk"] *= BATCH_PAYEE_WEIGHT * risk_freshness
     if edge_risk is not None:
-        values["siphoning"] *= _freshness(edge_risk.hours_since_computed)
-    return ChannelScore(
-        score=sum(values.values()),
-        confidence=0.5 + 0.5 * freshness,
-    )
+        values["siphoning"] *= BATCH_PAYEE_WEIGHT * _freshness(edge_risk.hours_since_computed)
+    return ChannelScore(score=sum(values.values()), confidence=1.0)
