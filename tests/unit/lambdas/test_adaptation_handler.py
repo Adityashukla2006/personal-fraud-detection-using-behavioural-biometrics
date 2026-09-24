@@ -83,7 +83,7 @@ class FakeStore:
         now: float,
     ) -> Claim | None:
         self.claims.append((tau, features))
-        return Claim(tau, features is not None)
+        return Claim(tau, features is not None, float(int(now)))
 
     def buffer(self, uid: str, device_class: str, capacity: int) -> list[BufferedSession]:
         return [BufferedSession(FEATURES, 1.0) for _ in range(self._buffered)]
@@ -189,15 +189,56 @@ class TestWhatIsIgnored:
 
 class TestRedelivery:
     def test_an_existing_claim_is_reused_and_never_claimed_again(self) -> None:
-        store = FakeStore(existing=Claim(1.0, True))
+        store = FakeStore(existing=Claim(1.0, True, NOW - 60))
         result, _ = _call(store)
         assert store.claims == []
         assert result["outcome"] == "bootstrapped"
 
     def test_an_existing_unadmitted_claim_stays_unadmitted(self) -> None:
-        store = FakeStore(existing=Claim(0.0, False))
+        store = FakeStore(existing=Claim(0.0, False, NOW - 60))
         assert _call(store)[0]["outcome"] == "not_admitted"
         assert store.saved == []
+
+
+QUORUM = dataclasses.replace(POLICY, reanchor_stepups=3, reanchor_stepup_days=3)
+
+
+def _quorum_call(store: FakeStore) -> dict[str, Any]:
+    deps = Dependencies(
+        store=store, model=FusionModel.load(), policy=QUORUM, clock=lambda: NOW, emit=print
+    )
+    return handle(EVENT, deps)
+
+
+class TestReanchorQuorum:
+    def _anchored(self, stepups: tuple[float, ...] = ()) -> UserContext:
+        vector = tuple([0.1] * WIDTH)
+        scale = tuple([0.01] * WIDTH)
+        # Anchored five days ago, well inside the quiet period, so only the quorum can re-anchor.
+        profile = Profile(vector, scale, vector, scale, NOW - 5 * 86_400, None, 0, 3, stepups)
+        return dataclasses.replace(ENROLLED, profile=profile, profile_version=3)
+
+    def test_a_step_up_short_of_the_quorum_is_recorded_without_re_anchoring(self) -> None:
+        store = FakeStore(context=self._anchored())
+        result = _quorum_call(store)
+        assert result["reanchored"] is False
+        profile, _, _ = store.saved[0]
+        assert profile.stepups == (float(int(NOW)),)
+
+    def test_a_redelivered_step_up_is_counted_once(self) -> None:
+        # The first delivery already recorded this step-up on the profile.
+        received = NOW - 60
+        store = FakeStore(context=self._anchored((received,)), existing=Claim(1.0, True, received))
+        result = _quorum_call(store)
+        assert result["reanchored"] is False
+        assert store.saved[0][0].stepups == (received,)
+
+    def test_the_third_step_up_on_a_third_day_re_anchors(self) -> None:
+        day = 86_400
+        store = FakeStore(context=self._anchored((NOW - 2 * day, NOW - day)))
+        result = _quorum_call(store)
+        assert result["reanchored"] is True
+        assert store.saved[0][0].stepups == ()
 
 
 class TestBudget:

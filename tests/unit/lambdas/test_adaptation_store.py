@@ -144,6 +144,28 @@ class TestReads:
         assert context.profile_version == 0
         assert context.profile is not None
         assert context.profile.anchor_centre == context.profile.centre
+        assert context.profile.stepups == ()
+
+    def test_a_redelivered_verification_reads_back_when_it_was_received(self) -> None:
+        item = {
+            "PK": f"USER#{UID}",
+            "SK": "VERIFIED#decision-1",
+            "trust": Decimal("1.0"),
+            "admitted": True,
+            "received_at": 1_789_463_000,
+        }
+        claim = _store(FakeClient([item])).verification(UID, "decision-1")
+        assert claim is not None
+        assert claim.received_at == 1_789_463_000.0
+
+    def test_step_ups_since_the_anchor_round_trip(self) -> None:
+        item = {
+            "features": list(PROFILE_FEATURES),
+            "mu": [Decimal("1")] * WIDTH,
+            "sigma": [Decimal("1")] * WIDTH,
+            "stepups_since_anchor": [Decimal("10"), Decimal("20")],
+        }
+        assert decode_profile(item).stepups == (10.0, 20.0)
 
     def test_a_profile_over_another_feature_set_is_rejected(self) -> None:
         item = {"features": ["mean_hold"], "mu": [1], "sigma": [1]}
@@ -155,7 +177,7 @@ class TestClaim:
     def test_an_admitted_claim_records_counts_and_buffers_in_one_transaction(self) -> None:
         client = FakeClient()
         claim = _store(client).claim(VERIFIED, DECISION, 1.0, (0.1,) * WIDTH, NOW)
-        assert (claim.trust, claim.admitted) == (1.0, True)
+        assert (claim.trust, claim.admitted, claim.received_at) == (1.0, True, float(int(NOW)))
 
         items = client.calls[0][1]["TransactItems"]
         assert len(items) == 3
@@ -213,10 +235,11 @@ class TestBufferAndProfile:
     ) -> None:
         client = FakeClient()
         vector_ = tuple([0.1] * WIDTH)
-        profile = Profile(vector_, vector_, vector_, vector_, NOW, None, 0, 4)
+        profile = Profile(vector_, vector_, vector_, vector_, NOW, None, 0, 4, (NOW - 5,))
         _store(client).save_profile(UID, "desktop", profile, 7, expected, NOW)
         put = client.calls[0][1]
         assert put["ConditionExpression"] == condition
         item = {name: _deserializer.deserialize(value) for name, value in put["Item"].items()}
         assert (item["version"], item["n_sessions"]) == (4, 7)
         assert item["last_saturated_at"] is None
+        assert item["stepups_since_anchor"] == [Decimal(repr(NOW - 5))]

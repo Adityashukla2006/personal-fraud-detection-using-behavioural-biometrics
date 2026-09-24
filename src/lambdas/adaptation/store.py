@@ -8,7 +8,8 @@ the profile rebuild after it may repeat, and a rebuild from the same buffer is s
     USER#<uid> / VERIFIED#<decision_id>          trust, admitted, method, transfer_id, TTL 180 days
     USER#<uid> / DEV#<device_id>                 session_count, device_class, first_seen
     USER#<uid> / BUF#<class>#<ms>#<decision_id>  features, trust, verified, TTL 180 days
-    USER#<uid> / PROFILE#<class>                 features, mu, sigma, anchor_*, saturations, version
+    USER#<uid> / PROFILE#<class>                 features, mu, sigma, anchor_*, saturations,
+                                                 stepups_since_anchor, version
 """
 
 from __future__ import annotations
@@ -84,6 +85,9 @@ class UserContext:
 class Claim:
     trust: float
     admitted: bool
+    received_at: float
+    """When the verification was first recorded. A redelivery reads it back, so it identifies the
+    step-up for the re-anchor quorum however many times the event arrives."""
 
 
 def decode_profile(item: Mapping[str, Any]) -> Profile:
@@ -102,6 +106,7 @@ def decode_profile(item: Mapping[str, Any]) -> Profile:
         ),
         saturations=int(item.get("saturations", 0)),
         version=int(item.get("version", 0)),
+        stepups=_floats(item.get("stepups_since_anchor", [])),
     )
 
 
@@ -190,7 +195,11 @@ class AdaptationStore:
         if item is None:
             return None
         # Records from before trust was computed carry none, and were never admitted.
-        return Claim(float(item.get("trust", 0.0)), bool(item.get("admitted", False)))
+        return Claim(
+            float(item.get("trust", 0.0)),
+            bool(item.get("admitted", False)),
+            float(item.get("received_at", 0)),
+        )
 
     def claim(
         self,
@@ -271,7 +280,7 @@ class AdaptationStore:
             ):
                 return None
             raise
-        return Claim(tau, admitted)
+        return Claim(tau, admitted, float(record["received_at"]))
 
     def buffer(self, uid: str, device_class: str, capacity: int) -> list[BufferedSession]:
         """The newest ``capacity`` admitted sessions, oldest first."""
@@ -313,6 +322,7 @@ class AdaptationStore:
             "anchor_at": profile.anchored_at,
             "last_saturated_at": profile.last_saturated_at,
             "saturations": profile.saturations,
+            "stepups_since_anchor": list(profile.stepups),
             "n_sessions": sessions,
             "version": profile.version,
             "updated_at": int(now),

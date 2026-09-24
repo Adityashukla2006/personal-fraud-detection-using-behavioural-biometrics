@@ -9,7 +9,7 @@ verified step-up (section 7):
     3. claim atomically: record the verification, count the device session, and admit the session's
        keystroke features to the buffer if trust reaches tau_min
     4. rebuild the profile from the buffer: bootstrap after cold start, or a robust update bounded
-       by the displacement budget, re-anchoring on full trust
+       by the displacement budget, re-anchoring once full-trust step-ups form a quorum
     5. write the profile under optimistic concurrency, and emit ``budget_saturated`` when the budget
        bound the update
 
@@ -30,6 +30,7 @@ from typing import Any, Protocol
 
 from adaptation.store import AdaptationStore, Claim, DecisionRecord, UserContext
 from fraudcore.adaptation import (
+    FULL_TRUST,
     AdaptationPolicy,
     BufferedSession,
     Profile,
@@ -163,7 +164,9 @@ def handle(event: Mapping[str, Any], deps: Dependencies) -> dict[str, Any]:
         return {**result, "outcome": "not_admitted"}
 
     buffer = deps.store.buffer(verified.uid, decision.device_class, deps.policy.buffer_capacity)
-    rebuilt = rebuild(context.profile, buffer, claim.trust, now, deps.policy)
+    # The step-up is identified by when it was first recorded, so a redelivery counts it once.
+    stepups = (claim.received_at,) if claim.trust >= FULL_TRUST else ()
+    rebuilt = rebuild(context.profile, buffer, claim.trust, now, deps.policy, stepups)
     if rebuilt.profile is None:
         return {**result, "outcome": rebuilt.outcome, "buffered": len(buffer)}
 
