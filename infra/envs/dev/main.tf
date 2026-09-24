@@ -124,6 +124,7 @@ module "api" {
 
   routes = {
     "POST /score"                                         = "scoring"
+    "GET /account"                                        = "transfers"
     "GET /transfers/{transfer_id}"                        = "transfers"
     "POST /transfers/{transfer_id}/stepup"                = "transfers"
     "POST /transfers/{transfer_id}/stepup/verify"         = "transfers"
