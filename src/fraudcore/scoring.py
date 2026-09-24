@@ -375,10 +375,15 @@ def payee_channel(
     """Payee novelty and verification for this user, plus cross-user destination risk.
 
     Novelty and verification are live facts, read from the edge at scoring time, so the channel is
-    always fully confident in them. The batch terms, global destination risk and the siphoning
-    signal, age instead: each is scaled by its own freshness and decays to nothing over a week, so a
-    failing aggregator removes its evidence rather than freezing a stale verdict into the score
-    (architecture section 14).
+    always fully confident in them. The batch evidence ages instead: each batch term is scaled by
+    its own freshness and decays to nothing over a week, so a failing aggregator removes its
+    evidence rather than freezing a stale verdict into the score (architecture section 14).
+
+    Batch evidence counts once, as the larger of the destination's global risk and this user's
+    siphoning signal. A payee with one sender has a global risk that is that sender's own siphon
+    score, so adding the two counted one pattern twice. And the siphoning signal counts only once
+    the batch layer has flagged the edge: volume and regularity alone describe a tutor's fees as
+    well as theft, which is why an edge is flagged only when identity corroborates (section 5.4).
 
     Confidence once depended on the batch layer too, at 0.5 plus half the global risk's freshness.
     That made a new payee's novelty alert only once the aggregator had scored the payee for anyone,
@@ -386,8 +391,13 @@ def payee_channel(
     unscored payee was only stepped up (docs/results.md, open issue 3).
     """
     values = payee_features(edge, risk, edge_risk)
-    risk_freshness = 0.0 if risk is None else _freshness(risk.hours_since_computed)
-    values["global_risk"] *= BATCH_PAYEE_WEIGHT * risk_freshness
-    if edge_risk is not None:
-        values["siphoning"] *= BATCH_PAYEE_WEIGHT * _freshness(edge_risk.hours_since_computed)
-    return ChannelScore(score=sum(values.values()), confidence=1.0)
+    global_risk = (
+        0.0 if risk is None else values["global_risk"] * _freshness(risk.hours_since_computed)
+    )
+    siphoning = 0.0
+    if edge_risk is not None and edge_risk.flagged:
+        siphoning = values["siphoning"] * _freshness(edge_risk.hours_since_computed)
+    live = values["payee_novelty"] + values["payee_unverified"]
+    return ChannelScore(
+        score=live + BATCH_PAYEE_WEIGHT * max(global_risk, siphoning), confidence=1.0
+    )

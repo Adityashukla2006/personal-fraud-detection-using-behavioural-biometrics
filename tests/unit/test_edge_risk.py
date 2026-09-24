@@ -30,15 +30,28 @@ def test_siphoning_is_a_payee_feature() -> None:
     assert payee_features(EDGE, None, EdgeRisk(0.8, 1.0))["siphoning"] == pytest.approx(0.8)
 
 
-def test_a_fresh_siphoning_signal_raises_the_payee_channel_by_its_weighted_score() -> None:
+def test_a_fresh_flagged_siphon_raises_the_payee_channel_by_its_weighted_score() -> None:
     quiet = payee_channel(EDGE, None).score
-    raised = payee_channel(EDGE, None, EdgeRisk(0.8, 0.0)).score
+    raised = payee_channel(EDGE, None, EdgeRisk(0.8, 0.0, flagged=True)).score
     assert raised == pytest.approx(quiet + 0.8 * BATCH_PAYEE_WEIGHT)
+
+
+def test_an_unflagged_siphon_score_adds_nothing() -> None:
+    # Volume and regularity without identity describe a tutor's fees as well as a siphon.
+    quiet = payee_channel(EDGE, None).score
+    assert payee_channel(EDGE, None, EdgeRisk(0.6, 0.0)).score == pytest.approx(quiet)
+
+
+def test_global_risk_and_siphoning_count_once() -> None:
+    quiet = payee_channel(EDGE, None).score
+    risk = PayeeRisk(risk_score=0.5, hours_since_computed=0.0)
+    both = payee_channel(EDGE, risk, EdgeRisk(0.8, 0.0, flagged=True)).score
+    assert both == pytest.approx(quiet + 0.8 * BATCH_PAYEE_WEIGHT)
 
 
 def test_a_stale_siphoning_signal_counts_for_nothing() -> None:
     quiet = payee_channel(EDGE, None).score
-    stale = EdgeRisk(0.8, PAYEE_RISK_STALE_HOURS)
+    stale = EdgeRisk(0.8, PAYEE_RISK_STALE_HOURS, flagged=True)
     assert payee_channel(EDGE, None, stale).score == pytest.approx(quiet)
 
 
