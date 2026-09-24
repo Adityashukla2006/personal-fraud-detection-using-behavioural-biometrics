@@ -27,6 +27,12 @@ step-up the genuine user passes resets the budget from a position the attacker h
 so the attacker gains a new budget each time the victim verifies. ``anchor="verified"`` re-anchors
 instead to the robust centre of fully trusted sessions only, which no attacker without the
 authenticator can contribute to.
+
+When a re-anchor happens. Deployed, the only sessions that reach adaptation are verified step-ups,
+so re-anchoring on any one of them refreshes the budget on every update and the budget never binds
+against an attacker who holds the authenticator. A step-up therefore re-anchors only as part of a
+quorum: ``reanchor_stepups`` step-ups since the last anchor, spread over at least
+``reanchor_stepup_days`` distinct calendar days. One compromised sitting cannot buy a fresh budget.
 """
 
 from __future__ import annotations
@@ -154,8 +160,9 @@ class AdaptationPolicy:
     ``budget`` bounds centre displacement, in scaled units, and must be positive. ``scale_budget``
     bounds the mean relative change of the scale; zero freezes the scale. Both are required, with no
     default, because each is calibrated or chosen from measured drift and a guessed value would
-    silently decide the security property. ``anchor`` chooses where a re-anchor moves the anchor to;
-    see the module docstring.
+    silently decide the security property. ``anchor`` chooses where a re-anchor moves the anchor to,
+    and ``reanchor_stepups`` and ``reanchor_stepup_days`` how many step-ups, on how many distinct
+    days, a re-anchor needs; see the module docstring. One and one re-anchor on every step-up.
     """
 
     budget: float
@@ -166,6 +173,8 @@ class AdaptationPolicy:
     cold_start_sessions: int = 5
     reanchor_days: float = 30.0
     anchor: AnchorSource = "projected"
+    reanchor_stepups: int = 1
+    reanchor_stepup_days: int = 1
 
     def __post_init__(self) -> None:
         if not (math.isfinite(self.budget) and self.budget > 0):
@@ -180,6 +189,8 @@ class AdaptationPolicy:
             raise ValueError("rebuild_every and reanchor_days must be positive")
         if self.anchor not in ANCHOR_SOURCES:
             raise ValueError(f"anchor must be one of {ANCHOR_SOURCES}")
+        if not 1 <= self.reanchor_stepup_days <= self.reanchor_stepups:
+            raise ValueError("need 1 <= reanchor_stepup_days <= reanchor_stepups")
 
     @property
     def frozen_scale(self) -> bool:
@@ -196,6 +207,8 @@ class AdaptationPolicy:
             cold_start_sessions=int(data["cold_start_sessions"]),
             reanchor_days=float(data["reanchor_days"]),
             anchor=str(data["anchor"]),  # type: ignore[arg-type]
+            reanchor_stepups=int(data["reanchor_stepups"]),
+            reanchor_stepup_days=int(data["reanchor_stepup_days"]),
         )
 
     @classmethod
@@ -368,6 +381,9 @@ def project(
 
 @dataclass(frozen=True)
 class Profile:
+    """A learned profile and its anchor. ``stepups`` holds the times of the step-ups seen since the
+    anchor was last set, which is what the re-anchor quorum counts."""
+
     centre: tuple[float, ...]
     scale: tuple[float, ...]
     anchor_centre: tuple[float, ...]
@@ -376,6 +392,7 @@ class Profile:
     last_saturated_at: float | None
     saturations: int
     version: int
+    stepups: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         widths = {
@@ -426,19 +443,37 @@ def _verified_anchor(
     return centre, scale
 
 
+def stepup_quorum(stepups: Sequence[float], policy: AdaptationPolicy) -> bool:
+    """Whether these step-up times are enough to re-anchor: enough of them, on enough days.
+
+    Days are calendar days of the timestamp, so two step-ups a minute either side of midnight count
+    as two days; a quorum of three days still needs a third sitting.
+    """
+    days = {math.floor(moment / SECONDS_PER_DAY) for moment in stepups}
+    return len(stepups) >= policy.reanchor_stepups and len(days) >= policy.reanchor_stepup_days
+
+
 def rebuild(
     profile: Profile | None,
     buffer: Sequence[BufferedSession],
     tau: float,
     now: float,
     policy: AdaptationPolicy,
+    stepups: Sequence[float] | None = None,
 ) -> Rebuild:
     """Recompute a profile from its buffer under the centre and scale budgets.
 
-    ``tau`` is the trust of the session that triggered the rebuild. A fully trusted session, which
-    only a passed step-up can produce, re-anchors: the budgets are measured from the new anchor
-    from then on. So does a quiet period of ``reanchor_days`` without saturation. Nothing else does.
+    ``tau`` is the trust of the session that triggered the rebuild. ``stepups`` are the times of the
+    fully trusted sessions admitted since the last rebuild; left out, it is the triggering session
+    alone if that was a step-up. Step-ups accumulate on the profile, and once they form a quorum
+    (``stepup_quorum``) the profile re-anchors: the budgets are measured from the new anchor from
+    then on. So does a quiet period of ``reanchor_days`` without saturation. Nothing else does.
+
+    Step-ups from before the current anchor are ignored, and a repeated time counts once, so a
+    redelivered event cannot count one step-up twice.
     """
+    if stepups is None:
+        stepups = (now,) if tau >= FULL_TRUST else ()
     sessions = bounded(buffer, policy.buffer_capacity)
 
     if profile is None and len(sessions) < policy.cold_start_sessions:
@@ -474,7 +509,10 @@ def rebuild(
         if profile.last_saturated_at is None
         else max(profile.anchored_at, profile.last_saturated_at)
     )
-    reanchor = tau >= FULL_TRUST or (
+    pending = tuple(
+        sorted({moment for moment in (*profile.stepups, *stepups) if moment >= profile.anchored_at})
+    )
+    reanchor = stepup_quorum(pending, policy) or (
         not saturated and now - quiet_since >= policy.reanchor_days * SECONDS_PER_DAY
     )
 
@@ -494,5 +532,6 @@ def rebuild(
         last_saturated_at=now if saturated else profile.last_saturated_at,
         saturations=profile.saturations + int(saturated),
         version=profile.version + 1,
+        stepups=() if reanchor else pending,
     )
     return Rebuild("updated", updated, distance, saturated, reanchor)

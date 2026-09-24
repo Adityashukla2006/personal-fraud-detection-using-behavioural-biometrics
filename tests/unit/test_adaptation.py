@@ -276,6 +276,106 @@ class TestRebuild:
         assert (result.saturated, result.reanchored) == (True, False)
 
 
+class TestReanchorQuorum:
+    """A step-up re-anchors only as one of ``reanchor_stepups`` on ``reanchor_stepup_days`` days."""
+
+    QUORUM = dataclasses.replace(POLICY, reanchor_stepups=3, reanchor_stepup_days=3)
+    DAY = adaptation.SECONDS_PER_DAY
+
+    def _step(self, profile: Profile, now: float, **kwargs: object) -> adaptation.Rebuild:
+        return rebuild(profile, _buffer([0.1] * 5), tau=1.0, now=now, policy=self.QUORUM, **kwargs)
+
+    def test_the_quorum_counts_step_ups_and_days(self) -> None:
+        day = self.DAY
+        assert adaptation.stepup_quorum([0.0, day, 2 * day], self.QUORUM)
+        assert not adaptation.stepup_quorum([0.0, day], self.QUORUM)
+        assert not adaptation.stepup_quorum([0.0, 1.0, 2 * day], self.QUORUM)
+        assert adaptation.stepup_quorum([0.0], POLICY)
+
+    def test_step_ups_just_across_midnight_are_two_days(self) -> None:
+        assert adaptation.stepup_quorum([self.DAY - 1, self.DAY, 5 * self.DAY], self.QUORUM)
+
+    def test_the_default_re_anchors_on_every_step_up(self) -> None:
+        assert (POLICY.reanchor_stepups, POLICY.reanchor_stepup_days) == (1, 1)
+
+    def test_one_step_up_is_recorded_but_does_not_re_anchor(self) -> None:
+        result = self._step(_profile(), now=self.DAY)
+        assert result.profile is not None
+        assert not result.reanchored
+        assert result.profile.stepups == (self.DAY,)
+        assert result.profile.anchored_at == 0.0
+
+    def test_the_third_step_up_on_a_third_day_re_anchors_and_resets_the_count(self) -> None:
+        profile = _profile()
+        for day in (1, 2):
+            result = self._step(profile, now=day * self.DAY)
+            assert result.profile is not None and not result.reanchored
+            profile = result.profile
+        result = self._step(profile, now=3 * self.DAY)
+        assert result.reanchored
+        assert result.profile is not None
+        assert result.profile.stepups == ()
+        assert result.profile.anchored_at == 3 * self.DAY
+
+    def test_three_step_ups_on_two_days_do_not_re_anchor(self) -> None:
+        profile = _profile()
+        for now in (self.DAY, self.DAY + 60, 2 * self.DAY):
+            result = self._step(profile, now=now)
+            assert result.profile is not None
+            profile = result.profile
+        assert not result.reanchored
+        assert len(profile.stepups) == 3
+
+    def test_a_redelivered_step_up_counts_once(self) -> None:
+        profile = _profile()
+        for now in (self.DAY, self.DAY, 2 * self.DAY, 2 * self.DAY):
+            result = self._step(profile, now=now, stepups=(now,))
+            assert result.profile is not None
+            profile = result.profile
+        assert not result.reanchored
+        assert profile.stepups == (self.DAY, 2 * self.DAY)
+
+    def test_step_ups_from_before_the_anchor_are_ignored(self) -> None:
+        profile = _profile(anchored_at=10 * self.DAY)
+        result = self._step(profile, now=11 * self.DAY, stepups=(self.DAY, 2 * self.DAY))
+        assert result.profile is not None
+        assert not result.reanchored
+        assert result.profile.stepups == ()
+
+    def test_a_batch_can_complete_the_quorum_in_one_rebuild(self) -> None:
+        batch = (self.DAY, 2 * self.DAY, 3 * self.DAY)
+        result = rebuild(
+            _profile(),
+            _buffer([0.1] * 5),
+            tau=0.6,
+            now=3 * self.DAY,
+            policy=self.QUORUM,
+            stepups=batch,
+        )
+        assert result.reanchored
+
+    def test_the_quiet_period_still_re_anchors_without_a_quorum(self) -> None:
+        now = self.QUORUM.reanchor_days * self.DAY
+        result = rebuild(_profile(), _buffer([0.1] * 5), tau=0.6, now=now, policy=self.QUORUM)
+        assert result.reanchored
+
+    def test_poisoning_step_ups_short_of_a_quorum_stay_within_one_budget(self) -> None:
+        # The attacker passes a step-up every rebuild, but all on one day: no fresh budget.
+        profile = _profile()
+        for minute in range(25):
+            result = rebuild(
+                profile, _buffer([100.0] * 10), 1.0, self.DAY + 60 * minute, self.QUORUM
+            )
+            assert result.profile is not None
+            profile = result.profile
+        assert displacement(profile.centre, (0.0,), (1.0,)) <= self.QUORUM.budget + 1e-9
+
+    @pytest.mark.parametrize(("stepups", "days"), [(2, 3), (3, 0)])
+    def test_an_impossible_quorum_is_rejected(self, stepups: int, days: int) -> None:
+        with pytest.raises(ValueError, match="reanchor_stepup_days"):
+            dataclasses.replace(POLICY, reanchor_stepups=stepups, reanchor_stepup_days=days)
+
+
 class TestAnchorSource:
     """Where a re-anchor moves the anchor: the flaw in "projected", and the fix in "verified"."""
 

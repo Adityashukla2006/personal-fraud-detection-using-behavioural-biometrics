@@ -49,6 +49,8 @@
     "rebuild_every": 20,
     "cold_start_sessions": 5,
     "reanchor_days": 30.0,
-    "anchor": "verified"
+    "anchor": "verified",
+    "reanchor_stepups": 1,
+    "reanchor_stepup_days": 1
   }
 }
