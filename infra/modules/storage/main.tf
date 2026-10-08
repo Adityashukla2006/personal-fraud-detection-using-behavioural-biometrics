@@ -301,13 +301,16 @@ resource "aws_s3_object" "client" {
   source       = "${var.client_dir}/${each.value}"
   source_hash  = filemd5("${var.client_dir}/${each.value}")
   content_type = local.content_types[regex("[^.]+$", each.value)]
+  # Browsers revalidate on every load, so a redeploy reaches the page and its modules at once.
+  cache_control = "no-cache"
 }
 
 resource "aws_s3_object" "client_config" {
-  bucket       = aws_s3_bucket.this["client"].id
-  key          = "config.mjs"
-  content      = "export default ${jsonencode(var.client_config)};\n"
-  content_type = local.content_types["mjs"]
+  bucket        = aws_s3_bucket.this["client"].id
+  key           = "config.mjs"
+  content       = "export default ${jsonencode(var.client_config)};\n"
+  content_type  = local.content_types["mjs"]
+  cache_control = "no-cache"
 }
 
 resource "aws_s3_bucket_policy" "this" {
