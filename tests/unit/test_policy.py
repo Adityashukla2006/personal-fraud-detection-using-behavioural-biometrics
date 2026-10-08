@@ -19,6 +19,7 @@ from fraudcore.policy import (
     decide,
     fail_open,
     response_for,
+    verifies_payee,
 )
 from fraudcore.scoring import CHANNELS
 
@@ -186,3 +187,24 @@ class TestResponses:
 
     def test_only_allow_and_monitor_release_without_a_hold(self) -> None:
         assert {a for a, r in RESPONSES.items() if r == "release"} == {"allow", "monitor"}
+
+
+class TestPayeeVerification:
+    def test_a_passkey_step_up_verifies_the_payee(self) -> None:
+        assert verifies_payee({"verified": True, "method": "passkey", "verified_at": 1})
+
+    @pytest.mark.parametrize(
+        "verification",
+        [
+            None,
+            {},
+            # An analyst approves one held transfer, never the payee for the future.
+            {"reviewed": True, "method": "analyst_review", "reviewed_by": "analyst"},
+            {"verified": False, "method": "passkey"},
+            # Truthy is not enough: only the boolean the transfers function sends counts.
+            {"verified": "true", "method": "passkey"},
+            {"verified": True, "method": "password"},
+        ],
+    )
+    def test_nothing_else_does(self, verification: dict | None) -> None:
+        assert not verifies_payee(verification)

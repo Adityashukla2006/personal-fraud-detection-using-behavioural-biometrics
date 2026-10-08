@@ -118,6 +118,48 @@ class TestHold:
         assert _ledger(client).hold(TRANSFER, "step_up", "token-1") == CANCELLED
 
 
+def _edge(client: FakeClient) -> dict[str, Any]:
+    (call,) = [kwargs for name, kwargs in client.calls if name == "transact_write_items"]
+    return call["TransactItems"][2]["Update"]
+
+
+class TestPayeeEdge:
+    def test_release_records_the_payee_in_the_same_transaction(self) -> None:
+        client = FakeClient()
+        _ledger(client).release(TRANSFER)
+        edge = _edge(client)
+        assert edge["Key"] == {"PK": {"S": "LEDGER#user-1"}, "SK": {"S": f"PAYEE#{'a' * 64}"}}
+        # First seen once, then counted on every release.
+        assert "first_seen = if_not_exists(first_seen, :now)" in edge["UpdateExpression"]
+        assert "ADD txn_count :one, cum_amount :amount" in edge["UpdateExpression"]
+        assert edge["ExpressionAttributeValues"][":amount"] == {"N": "250.50"}
+        assert edge["ExpressionAttributeValues"][":now"] == {"N": "1767225600"}
+
+    def test_an_allowed_release_does_not_verify_the_payee(self) -> None:
+        client = FakeClient()
+        _ledger(client).release(TRANSFER)
+        assert "verified_at" not in _edge(client)["UpdateExpression"]
+
+    def test_a_passkey_step_up_verifies_the_payee(self) -> None:
+        client = FakeClient()
+        verified = {**TRANSFER, "verification": {"verified": True, "method": "passkey"}}
+        _ledger(client).release(verified)
+        assert "verified_at = :now" in _edge(client)["UpdateExpression"]
+
+    def test_an_analyst_release_does_not_verify_the_payee(self) -> None:
+        client = FakeClient()
+        reviewed = {**TRANSFER, "review": {"reviewed": True, "method": "analyst_review"}}
+        _ledger(client).release(reviewed)
+        assert "verified_at" not in _edge(client)["UpdateExpression"]
+
+    def test_the_edge_has_no_condition_of_its_own(self) -> None:
+        # The close's open-status condition guards the whole transaction: a retried release fails
+        # there and counts nothing. A condition here would add a third cancellation reason.
+        client = FakeClient()
+        _ledger(client).release(TRANSFER)
+        assert "ConditionExpression" not in _edge(client)
+
+
 class TestRelease:
     def test_release_debits_and_closes_in_one_transaction(self) -> None:
         client = FakeClient()
@@ -135,7 +177,7 @@ class TestRelease:
             status=RELEASED,
             errors={
                 "transact_write_items": _error(
-                    "TransactionCanceledException", ["None", "ConditionalCheckFailed"]
+                    "TransactionCanceledException", ["None", "ConditionalCheckFailed", "None"]
                 )
             },
         )
@@ -146,7 +188,7 @@ class TestRelease:
         client = FakeClient(
             errors={
                 "transact_write_items": _error(
-                    "TransactionCanceledException", ["ConditionalCheckFailed", "None"]
+                    "TransactionCanceledException", ["ConditionalCheckFailed", "None", "None"]
                 )
             }
         )

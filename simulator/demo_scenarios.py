@@ -140,7 +140,7 @@ def history_items(
     if payee_account:
         items.append(
             {
-                "PK": f"USER#{uid}",
+                "PK": f"LEDGER#{uid}",
                 "SK": f"PAYEE#{payee_id(payee_account)}",
                 "first_seen": int(now) - 200 * DAY,
                 "verified_at": int(now) - 190 * DAY,
@@ -239,7 +239,7 @@ def main() -> int:
             uid = subject()
             items = [
                 item
-                for partition in (f"USER#{uid}", f"AGG#{uid}")
+                for partition in (f"USER#{uid}", f"AGG#{uid}", f"LEDGER#{uid}")
                 for item in table.query(KeyConditionExpression=Key("PK").eq(partition))["Items"]
             ]
             for item in demo_items(items):

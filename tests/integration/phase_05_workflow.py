@@ -87,7 +87,11 @@ class Stack:
         assert status == 200, body
         self.created += [(f"SESS#{session}", "META"), (f"DEC#{body['decision_id']}", "META")]
         self.created.append((f"LEDGER#{self.sub}", f"TXN#{body['decision_id']}"))
+        self.created.append((f"LEDGER#{self.sub}", f"PAYEE#{self.payee_id(payee)}"))
         return body
+
+    def payee_edge(self, payee: str) -> dict[str, Any]:
+        return self.item(f"LEDGER#{self.sub}", f"PAYEE#{self.payee_id(payee)}")
 
     def payee_id(self, payee: str) -> str:
         return hashlib.sha256(f"{TEST_PREFIX}{payee}{self.run}".encode()).hexdigest()
@@ -148,6 +152,12 @@ def test_an_allowed_transfer_is_released_and_debited(
     assert transfer["status"] == "released"
     assert stack.balance() == before - Decimal("120.00")
 
+    # The release made the payee known, but the allow path verified nothing.
+    edge = stack.payee_edge("allowed")
+    assert (edge["txn_count"], edge["cum_amount"]) == (1, Decimal("120.00"))
+    assert edge["first_seen"] == edge["last_paid_at"]
+    assert "verified_at" not in edge
+
     # The account view goes through the API, so it also proves the route may invoke its function.
     status, account = _get(f"{outputs['api_url']}/account", user["token"])
     assert status == 200
@@ -194,6 +204,8 @@ def test_a_step_up_holds_the_transfer_until_verified_then_releases_it(
     assert transfer["status"] == "released"
     assert "task_token" not in transfer
     assert stack.balance() == before - Decimal("250.00")
+    # Only the customer's passkey verifies a payee.
+    assert "verified_at" in stack.payee_edge("step-up")
 
 
 def test_a_step_up_that_times_out_is_cancelled_and_never_debited(
@@ -253,6 +265,8 @@ def test_a_corroborated_block_alerts_and_is_cancelled(
     transfer = _settled(stack, transfer_id)
     assert (transfer["status"], transfer["reason"]) == ("cancelled", "blocked")
     assert stack.balance() == before
+    # Money never reached the mule, so it never became a known payee.
+    assert stack.payee_edge(payee) == {}
 
     history = stack.sfn.get_execution_history(
         executionArn=stack.execution(transfer_id)["executionArn"], maxResults=100

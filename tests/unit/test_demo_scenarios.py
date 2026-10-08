@@ -90,7 +90,7 @@ def test_the_seeded_history_is_what_scoring_reads() -> None:
         ("AGG#uid-1", "WINDOW#30d"),
         ("USER#uid-1", "ACCOUNT"),
         ("USER#uid-1", "DEV#device-1"),
-        ("USER#uid-1", f"PAYEE#{demo_scenarios.payee_id('123456789')}"),
+        ("LEDGER#uid-1", f"PAYEE#{demo_scenarios.payee_id('123456789')}"),
     }
     by_sort = {item["SK"]: item for item in items}
     assert by_sort["DEV#device-1"]["session_count"] >= ENROLLED_DEVICE_SESSIONS

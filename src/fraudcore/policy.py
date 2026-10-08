@@ -63,6 +63,19 @@ TOP_CONTRIBUTIONS = 3
 OPENING_BALANCE = Decimal("100000")
 
 
+def verifies_payee(verification: Mapping[str, Any] | None) -> bool:
+    """Whether a released transfer makes its payee a verified one for this user.
+
+    Only the customer's own passkey step-up does. An analyst's review approves one held transfer,
+    not the payee, and the allow path verified nothing; an attacker passes neither test.
+    """
+    return (
+        verification is not None
+        and verification.get("verified") is True
+        and verification.get("method") == "passkey"
+    )
+
+
 def _rank(action: Action) -> int:
     return ACTIONS.index(action)
 

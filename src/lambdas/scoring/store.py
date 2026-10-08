@@ -145,7 +145,8 @@ class Store:
         }
         if request.transaction is not None:
             payee = request.transaction.payee_id
-            keys["edge"] = (user, f"PAYEE#{payee}")
+            # The ledger records a payee when money first reaches it, in its own partition.
+            keys["edge"] = (f"LEDGER#{uid}", f"PAYEE#{payee}")
             keys["risk"] = (f"PAYEE#{payee}", "RISK")
             keys["edge_risk"] = (f"AGG#{uid}", f"EDGE#{payee}")
 

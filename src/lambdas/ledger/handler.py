@@ -9,6 +9,13 @@ Items, all in the user's ledger partition:
 
     LEDGER#<uid> / BALANCE      balance, opening
     LEDGER#<uid> / TXN#<id>     status, amount, payee_id, decision_id, action, reason, task_token
+    LEDGER#<uid> / PAYEE#<pid>  first_seen, last_paid_at, txn_count, cum_amount, verified_at
+
+The payee edge is written in the release transaction, so a payee becomes known exactly when money
+first reaches it, and a retried or rejected release counts nothing. It lives in the ledger's
+partition rather than USER#, which only adaptation may write. Novelty still fades over 30 days from
+``first_seen``, and ``verified_at`` needs the customer's passkey, so an attacker's released transfer
+does not make a mule look established.
 """
 
 from __future__ import annotations
@@ -22,7 +29,7 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
-from fraudcore.policy import OPENING_BALANCE
+from fraudcore.policy import OPENING_BALANCE, verifies_payee
 
 LOGGER = logging.getLogger()
 LOGGER.setLevel(logging.INFO)
@@ -127,6 +134,23 @@ class Ledger:
             return self.status(uid, transfer_id)
         return held
 
+    def _payee_edge(self, transfer: Mapping[str, Any]) -> dict[str, Any]:
+        assignments = "first_seen = if_not_exists(first_seen, :now), last_paid_at = :now"
+        if verifies_payee(transfer.get("verification")):
+            assignments += ", verified_at = :now"
+        return {
+            "Update": {
+                "TableName": self._table,
+                "Key": self._key(transfer["uid"], f"PAYEE#{transfer['payee_id']}"),
+                "UpdateExpression": f"SET {assignments} ADD txn_count :one, cum_amount :amount",
+                "ExpressionAttributeValues": {
+                    ":now": {"N": str(int(self._clock()))},
+                    ":one": {"N": "1"},
+                    ":amount": {"N": _money(transfer["amount"])},
+                },
+            }
+        }
+
     def release(self, transfer: Mapping[str, Any]) -> str:
         uid, transfer_id = transfer["uid"], transfer["transfer_id"]
         try:
@@ -159,6 +183,8 @@ class Ledger:
                             },
                         }
                     },
+                    # Last, so the cancellation reasons below keep their positions.
+                    self._payee_edge(transfer),
                 ]
             )
         except ClientError as error:

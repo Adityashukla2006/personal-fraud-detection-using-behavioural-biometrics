@@ -91,6 +91,7 @@ class TestLoad:
         assert len(client.requested) == 6
         Store(client, TABLE).load(UID, _request(transaction=True), NOW)
         assert (f"PAYEE#{PAYEE}", "RISK") in client.requested
+        assert (f"LEDGER#{UID}", f"PAYEE#{PAYEE}") in client.requested
 
     def test_replay_history_is_the_union_of_remembered_sessions(self) -> None:
         item = {
@@ -177,7 +178,7 @@ class TestLoad:
         assert state.edge.verified is False
 
     def test_a_live_edge_wins_over_batch_history(self) -> None:
-        live = {"PK": f"USER#{UID}", "SK": f"PAYEE#{PAYEE}", "first_seen": int(NOW) - 86_400,
+        live = {"PK": f"LEDGER#{UID}", "SK": f"PAYEE#{PAYEE}", "first_seen": int(NOW) - 86_400,
                 "verified_at": int(NOW)}
         batch = {"PK": f"AGG#{UID}", "SK": f"EDGE#{PAYEE}", "siphon_score": Decimal("0"),
                  "first_seen": int(NOW) - 50 * 86_400, "computed_at": int(NOW)}
@@ -215,7 +216,7 @@ class TestLoad:
                 "contact_changed_at": Decimal(str(NOW + 60)),
             },
             {
-                "PK": f"USER#{UID}",
+                "PK": f"LEDGER#{UID}",
                 "SK": f"PAYEE#{PAYEE}",
                 "first_seen": Decimal(str(NOW - 6 * SECONDS_PER_DAY)),
                 "verified_at": Decimal(str(NOW - SECONDS_PER_DAY)),

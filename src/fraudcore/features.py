@@ -405,7 +405,7 @@ def context_features(context: SessionContext) -> dict[str, float]:
 
 @dataclass(frozen=True)
 class PayeeEdge:
-    """This user's history with this payee, from ``USER#<uid> / PAYEE#<pid>``."""
+    """This user's history with this payee, from ``LEDGER#<uid> / PAYEE#<pid>``."""
 
     days_since_first_seen: float
     verified: bool

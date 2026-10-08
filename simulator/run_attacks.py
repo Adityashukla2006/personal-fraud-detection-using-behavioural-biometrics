@@ -147,7 +147,7 @@ def baseline_items(
             "history_count": 60,
         },
         {
-            "PK": user,
+            "PK": f"LEDGER#{uid}",
             "SK": f"PAYEE#{attacks.payee_id(attacks.known_payee(victim))}",
             "first_seen": int(now) - 200 * DAY,
             "verified_at": int(now) - 190 * DAY,

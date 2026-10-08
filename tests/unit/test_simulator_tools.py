@@ -88,7 +88,7 @@ def test_the_seeded_baseline_is_what_the_live_system_reads() -> None:
     assert profile.version == 1
     assert by_key[("USER#uid-1", "PROFILE#desktop")]["n_sessions"] == 12
     payee = attacks.payee_id(attacks.known_payee("s002"))
-    assert ("USER#uid-1", f"PAYEE#{payee}") in by_key
+    assert ("LEDGER#uid-1", f"PAYEE#{payee}") in by_key
     assert ("AGG#uid-1", "WINDOW#30d") in by_key
     assert by_key[("USER#uid-1", "DEV#sim-home-s002")]["session_count"] == 30
 
