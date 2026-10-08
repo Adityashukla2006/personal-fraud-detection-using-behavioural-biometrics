@@ -18,8 +18,10 @@ import {
   resetRecorder,
 } from "./capture.mjs";
 import { createHood, stepsFor } from "./cloud.mjs";
+import { clearSession, restoreSession, saveSession } from "./session.mjs";
 
 const $ = (id) => document.getElementById(id);
+const SESSION_KEY = "bfd-session";
 const VIEWS = ["signin", "dashboard", "transfer", "activity", "security"];
 const STEPS = ["payee", "amount", "review", "done"];
 
@@ -585,6 +587,24 @@ async function confirmTransfer() {
 // ---- Sign-in ------------------------------------------------------------------------------------
 
 async function afterSignIn(tokens, email, roundTrip) {
+  saveSession(SESSION_KEY, tokens, email);
+  enter(tokens, email);
+  hood.record("POST", "cognito-idp · InitiateAuth", 200, roundTrip, "signed in");
+  hood.trace(stepsFor("signin"));
+  location.hash = "#dashboard";
+  route();
+  await checkpoint("login", "login");
+  await loadAccount();
+}
+
+// A refresh resumes the tab's sign-in. The login checkpoint scored the real sign-in already.
+async function resume({ tokens, email }) {
+  enter(tokens, email);
+  route();
+  await loadAccount();
+}
+
+function enter(tokens, email) {
   state.tokens = tokens;
   state.email = email;
   state.sessionId = newId();
@@ -599,13 +619,6 @@ async function afterSignIn(tokens, email, roundTrip) {
   const hour = new Date().getHours();
   $("greeting").textContent = `${hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening"}, ${name}`;
   $("account-number").textContent = accountNumber(subject());
-
-  hood.record("POST", "cognito-idp · InitiateAuth", 200, roundTrip, "signed in");
-  hood.trace(stepsFor("signin"));
-  location.hash = "#dashboard";
-  route();
-  await checkpoint("login", "login");
-  await loadAccount();
 }
 
 async function timed(promise) {
@@ -615,6 +628,7 @@ async function timed(promise) {
 }
 
 function signOut() {
+  clearSession(SESSION_KEY);
   state.tokens = null;
   state.lastConfirmBehaviour = null;
   $("app").dataset.signedIn = "false";
@@ -744,6 +758,8 @@ function wire() {
     route();
   });
   route();
+  const saved = restoreSession(SESSION_KEY);
+  if (saved) guard(() => resume(saved))();
 
   // The page itself came from S3 through CloudFront.
   const navigation = performance.getEntriesByType("navigation")[0];

@@ -1,7 +1,9 @@
 import config from "./config.mjs";
 import { NewPasswordRequired, signInWithPasskey, signInWithPassword } from "./auth.mjs";
+import { clearSession, restoreSession, saveSession } from "./session.mjs";
 
 const $ = (id) => document.getElementById(id);
+const SESSION_KEY = "bfd-console-session";
 
 const state = { tokens: null, uid: null, tab: "users", timer: null };
 
@@ -318,6 +320,7 @@ function scheduleRefresh() {
 }
 
 async function afterSignIn(tokens, email) {
+  saveSession(SESSION_KEY, tokens, email);
   state.tokens = tokens;
   $("signin").hidden = true;
   $("workspace").hidden = false;
@@ -364,6 +367,7 @@ $("passkey-signin").addEventListener(
 );
 
 $("signout").addEventListener("click", () => {
+  clearSession(SESSION_KEY);
   state.tokens = null;
   clearInterval(state.timer);
   $("workspace").hidden = true;
@@ -376,3 +380,6 @@ for (const tab of document.querySelectorAll("[role=tab]")) tab.addEventListener(
 $("reload-users").addEventListener("click", guard(loadUsers));
 $("reload-lake").addEventListener("click", guard(loadLake));
 $("auto-refresh").addEventListener("change", scheduleRefresh);
+
+const saved = restoreSession(SESSION_KEY);
+if (saved) guard(() => afterSignIn(saved.tokens, saved.email))();
