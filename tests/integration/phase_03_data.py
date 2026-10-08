@@ -118,6 +118,11 @@ class TestLeastPrivilege:
             ("adaptation", "dynamodb:PutItem", "USER#u1", "allowed"),
             ("adaptation", "dynamodb:PutItem", "DEC#d1", "implicitDeny"),
             ("ledger", "dynamodb:GetItem", "USER#u1", "implicitDeny"),
+            # Payee edges are written in the ledger's own partition, never in USER#.
+            ("ledger", "dynamodb:UpdateItem", "USER#u1", "implicitDeny"),
+            ("ledger", "dynamodb:UpdateItem", "LEDGER#u1", "allowed"),
+            ("scoring", "dynamodb:BatchGetItem", "LEDGER#u1", "allowed"),
+            ("scoring", "dynamodb:UpdateItem", "LEDGER#u1", "implicitDeny"),
             ("aggregator", "dynamodb:PutItem", "PAYEE#p1", "allowed"),
             ("aggregator", "dynamodb:PutItem", "AGG#u1", "allowed"),
             # Only adaptation writes profiles; the aggregator cannot reach the USER# partition.

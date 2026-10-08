@@ -16,9 +16,10 @@ locals {
   # Partition-key prefixes each function may read and write. IAM can scope DynamoDB by partition
   # key (dynamodb:LeadingKeys) but not by sort key, so every rule here is a partition prefix.
   functions = {
-    # Replay history is scoring's own partition, so it never needs write access to USER#.
+    # Replay history is scoring's own partition, so it never needs write access to USER#. It reads
+    # LEDGER# only for the payee edges the ledger records on release.
     scoring = {
-      read  = ["USER#*", "PAYEE#*", "AGG#*", "SESS#*", "REPLAY#*"]
+      read  = ["USER#*", "PAYEE#*", "AGG#*", "SESS#*", "REPLAY#*", "LEDGER#*"]
       write = ["SESS#*", "DEC#*", "REPLAY#*"]
     }
     # The only writer of profile, buffer, device and verification items. Reads the verified
@@ -33,7 +34,8 @@ locals {
       read  = []
       write = ["AGG#*", "PAYEE#*"]
     }
-    # The only writer of ledger items, invoked only by the response workflow.
+    # The only writer of ledger items, invoked only by the response workflow. Payee edges live in
+    # LEDGER# too, so recording a payee never needs write access to USER#.
     ledger = {
       read  = ["LEDGER#*"]
       write = ["LEDGER#*"]
