@@ -18,10 +18,13 @@ import {
   resetRecorder,
 } from "./capture.mjs";
 import { createHood, stepsFor } from "./cloud.mjs";
+import { OPEN, settledNotices } from "./notices.mjs";
 import { clearSession, restoreSession, saveSession } from "./session.mjs";
 
 const $ = (id) => document.getElementById(id);
 const SESSION_KEY = "bfd-session";
+// While a transfer is still open, the statement is re-read this often to notice it settle.
+const WATCH_MS = 5000;
 const VIEWS = ["signin", "dashboard", "transfer", "activity", "security"];
 const STEPS = ["payee", "amount", "review", "done"];
 
@@ -35,6 +38,8 @@ const state = {
   draft: {},
   transferId: null,
   lastConfirmBehaviour: null,
+  watching: false,
+  settledHere: new Set(),
 };
 
 const hood = createHood($("hood"));
@@ -384,16 +389,55 @@ function fillList(list, transfers, limit) {
   list.replaceChildren(...rows);
 }
 
-async function loadAccount() {
+// Quiet reads are the background watch: they stay out of the under-the-hood panel.
+async function loadAccount(quiet = false) {
   const result = await call("GET", "/account");
-  hood.record("GET", "/account", result.status, result.roundTrip, "balance and statement");
+  if (!quiet) hood.record("GET", "/account", result.status, result.roundTrip, "balance and statement");
   if (!result.ok) throw new Error("We couldn't load your account.");
-  hood.latencyOnly(result.roundTrip, "API Gateway, λ transfers and DynamoDB");
-  hood.trace(stepsFor("account", { values: { network: result.roundTrip } }));
+  if (!quiet) {
+    hood.latencyOnly(result.roundTrip, "API Gateway, λ transfers and DynamoDB");
+    hood.trace(stepsFor("account", { values: { network: result.roundTrip } }));
+  }
   state.balance = result.data.balance;
   $("balance").textContent = rupees(result.data.balance);
   fillList($("recent-list"), result.data.transfers, 5);
   fillList($("activity-list"), result.data.transfers, 10);
+  notify(result.data.transfers);
+}
+
+// ---- Notifications ------------------------------------------------------------------------------
+
+function notify(transfers) {
+  // Remembered per user, so a transfer settled while signed out is still announced on return.
+  const key = `bfd-seen-${subject()}`;
+  const describe = (t) => `${rupees(t.amount)} to ${payeeBook()[t.payee_id]?.name ?? "a new beneficiary"}`;
+  const { notices, seen } = settledNotices(stored(key, null), transfers, describe);
+  store(key, seen);
+  for (const notice of notices) {
+    // This page already showed the outcome of transfers it settled itself.
+    if (!state.settledHere.has(notice.transferId)) showNotice(notice);
+  }
+  state.watching = transfers.some((t) => OPEN.has(t.status));
+}
+
+function showNotice({ level, title, text }) {
+  const card = document.createElement("div");
+  card.className = "notice";
+  card.dataset.level = level;
+  card.setAttribute("role", "status");
+  const body = document.createElement("div");
+  body.append(Object.assign(document.createElement("b"), { textContent: title }), Object.assign(document.createElement("p"), { textContent: text }));
+  const close = Object.assign(document.createElement("button"), { type: "button", className: "notice-close", textContent: "×" });
+  close.setAttribute("aria-label", "Dismiss");
+  close.addEventListener("click", () => card.remove());
+  card.append(body, close);
+  $("notices").prepend(card);
+}
+
+function watch() {
+  setInterval(() => {
+    if (state.tokens && state.watching && document.visibilityState === "visible") loadAccount(true).catch(() => {});
+  }, WATCH_MS);
 }
 
 // ---- Views --------------------------------------------------------------------------------------
@@ -486,6 +530,8 @@ async function pollTransfer(transferId, attempts = 20) {
 
 async function settle(transfer) {
   const status = transfer.status;
+  if (OPEN.has(status)) state.watching = true;
+  else state.settledHere.add(state.transferId);
   if (status === "released") {
     showResult({
       level: "good", icon: "✓", title: "Transfer successful",
@@ -630,6 +676,8 @@ async function timed(promise) {
 function signOut() {
   clearSession(SESSION_KEY);
   state.tokens = null;
+  state.watching = false;
+  $("notices").replaceChildren();
   state.lastConfirmBehaviour = null;
   $("app").dataset.signedIn = "false";
   resetTransfer();
@@ -760,6 +808,7 @@ function wire() {
   route();
   const saved = restoreSession(SESSION_KEY);
   if (saved) guard(() => resume(saved))();
+  watch();
 
   // The page itself came from S3 through CloudFront.
   const navigation = performance.getEntriesByType("navigation")[0];

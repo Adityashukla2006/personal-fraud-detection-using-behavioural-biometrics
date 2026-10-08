@@ -373,6 +373,24 @@ input:focus { border-color: var(--focus); outline: none; box-shadow: 0 0 0 3px c
 .toast.show { transform: translateX(-50%) translateY(0); visibility: visible; transition: transform 0.25s; }
 .toast.error { background: var(--critical); color: #fff; }
 
+.notices {
+  position: fixed; top: 70px; right: 1rem; z-index: 55; display: grid; gap: 0.6rem;
+  width: min(360px, calc(100% - 2rem));
+}
+.notice {
+  display: flex; gap: 0.6rem; align-items: flex-start; background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line); border-left: 4px solid var(--good); border-radius: 10px;
+  padding: 0.75rem 0.6rem 0.75rem 0.9rem; box-shadow: var(--shadow); font-size: 0.9rem;
+}
+.notice[data-level="serious"] { border-left-color: var(--serious); }
+.notice[data-level="critical"] { border-left-color: var(--critical); }
+.notice > div { flex: 1; min-width: 0; }
+.notice p { margin: 0.2rem 0 0; color: var(--ink-2); }
+.notice-close {
+  background: transparent; border: none; color: var(--muted); font-size: 1.2rem; line-height: 1;
+  padding: 0.1rem 0.3rem; cursor: pointer;
+}
+
 .tooltip {
   position: fixed; z-index: 60; pointer-events: none; background: var(--ink); color: var(--page);
   font-size: 0.78rem; font-weight: 600; padding: 0.35rem 0.55rem; border-radius: 6px; white-space: nowrap;
