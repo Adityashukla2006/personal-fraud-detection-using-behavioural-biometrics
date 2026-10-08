@@ -7,9 +7,14 @@ every request's route through AWS, its measured latency, the decision, and the e
 ## Before the demo
 
 1. Sign in once with your test account and add a passkey (Security, Add a passkey).
-2. Mark the laptop's browser as an enrolled device, so a passkey step-up there earns full trust:
-   `python simulator/demo_scenarios.py enrolled-device --email <you>`.
-3. Make one small transfer, so there is history and a confirmed session to replay later.
+2. Give the account two months of ordinary use, through the real pipeline:
+   `python simulator/demo_scenarios.py history --email <you>`. It writes released transfers to four
+   regular payees into the ledger and the audit lake, runs the deployed aggregator over them, and
+   enrols the laptop's browser. Paste the snippet it prints into the browser console, so the
+   statement names the payees. Re-run it on the day if the demo is not today: it replaces itself.
+3. Make yourself an analyst, to release held transfers in the operations console:
+   `python simulator/demo_scenarios.py analyst --email <you>`.
+4. Make one small transfer to a regular payee, so there is a confirmed session to replay later.
 
 ## The story
 
@@ -18,7 +23,7 @@ every request's route through AWS, its measured latency, the decision, and the e
    the network.
 2. **What leaves the browser.** Open the payload panel: timing arrays and three counts, no
    characters, no key codes, and the payee account only as a SHA-256 hash.
-3. **A normal transfer.** Pay a small amount to the same beneficiary as before. Each wizard step is
+3. **A normal transfer.** Pay a small amount to a regular payee (Maa, account 302118765432). Each wizard step is
    a checkpoint; the confirmation starts Step Functions, the ledger debits, and the decision is
    archived to the S3 lake (dashed, asynchronous hops).
 4. **A takeover.** Ask someone else to type the transfer on your signed-in account, to a new
@@ -30,11 +35,15 @@ every request's route through AWS, its measured latency, the decision, and the e
    channel fires.
 6. **A replay.** Tick "Replay my last confirmed transfer's typing" before confirming: the timing
    matches a remembered session exactly, and the replay detector fires.
-7. **A mule.** `python simulator/demo_scenarios.py flagged-payee --account <number>` flags a payee
+7. **An unusual amount.** Pay ₹2,00,000 to a new account. Against two months of payments around
+   ₹1,000, the transaction channel alerts on its own: the transfer is restricted and held, and an
+   analyst releases it from the operations console. The ledger debits only then.
+8. **A mule.** `python simulator/demo_scenarios.py flagged-payee --account <number>` flags a payee
    as the batch layer would; a transfer to it is restricted and waits for an analyst in the
    operations console (footer link).
-8. **The research result.** Close on docs/results.md section 2: naive adaptation is poisonable, a
+9. **The research result.** Close on docs/results.md section 2: naive adaptation is poisonable, a
    static profile rejects genuine drift, and on the deployed configuration the step-up gate is what
    stops poisoning.
 
-Afterwards: `python simulator/demo_scenarios.py clear --email <you> [--account <number>]`.
+Afterwards: `python simulator/demo_scenarios.py clear --email <you> [--account <number>]`. It also
+removes the seeded history from the lake and the ledger and re-runs the aggregator.
