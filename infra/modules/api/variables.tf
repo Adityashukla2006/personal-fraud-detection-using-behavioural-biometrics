@@ -16,11 +16,10 @@ variable "jwt_audience" {
 }
 
 variable "functions" {
-  description = "Integrated functions: name, invoke ARN, and the path their invoke permission covers."
+  description = "Integrated functions: name and invoke ARN."
   type = map(object({
     name       = string
     invoke_arn = string
-    path       = string
   }))
 }
 

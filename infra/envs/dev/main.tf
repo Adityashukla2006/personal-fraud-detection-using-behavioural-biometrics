@@ -108,17 +108,14 @@ module "api" {
     scoring = {
       name       = module.compute.scoring_function_name
       invoke_arn = module.compute.scoring_invoke_arn
-      path       = "score"
     }
     transfers = {
       name       = module.compute.transfers_function_name
       invoke_arn = module.compute.transfers_invoke_arn
-      path       = "transfers/*"
     }
     console = {
       name       = module.compute.console_function_name
       invoke_arn = module.compute.console_invoke_arn
-      path       = "console/*"
     }
   }
 

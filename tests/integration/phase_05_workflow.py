@@ -136,7 +136,7 @@ def _settled(stack: Stack, transfer_id: str) -> dict[str, Any]:
 
 
 def test_an_allowed_transfer_is_released_and_debited(
-    stack: Stack, user: dict[str, str]  # noqa: F811
+    stack: Stack, outputs: dict[str, Any], user: dict[str, str]  # noqa: F811
 ) -> None:
     before = stack.balance()
     body = stack.confirm(user["token"], 120.0, "allowed")
@@ -147,6 +147,12 @@ def test_an_allowed_transfer_is_released_and_debited(
     assert stack.execution(body["decision_id"])["status"] == "SUCCEEDED"
     assert transfer["status"] == "released"
     assert stack.balance() == before - Decimal("120.00")
+
+    # The account view goes through the API, so it also proves the route may invoke its function.
+    status, account = _get(f"{outputs['api_url']}/account", user["token"])
+    assert status == 200
+    assert Decimal(str(account["balance"])) == stack.balance()
+    assert body["decision_id"] in {item["transfer_id"] for item in account["transfers"]}
 
 
 def test_a_step_up_holds_the_transfer_until_verified_then_releases_it(

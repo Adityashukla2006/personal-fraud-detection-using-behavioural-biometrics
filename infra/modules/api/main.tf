@@ -70,16 +70,26 @@ resource "aws_apigatewayv2_stage" "default" {
   }
 }
 
-# Invoke permissions belong to the API because the API is the caller they authorise. Each is scoped
-# to the function's own path.
-resource "aws_lambda_permission" "function" {
-  for_each = var.functions
+# Invoke permissions belong to the API because the API is the caller they authorise. One per route,
+# derived from the route key, so a route can never be added without the permission it needs.
+locals {
+  route_grants = {
+    for key, function in var.routes : key => {
+      function = function
+      method   = split(" ", key)[0]
+      path     = replace(trimprefix(split(" ", key)[1], "/"), "/\\{[^}]+\\}/", "*")
+    }
+  }
+}
 
-  statement_id  = "AllowHttpApiInvoke"
+resource "aws_lambda_permission" "route" {
+  for_each = local.route_grants
+
+  statement_id  = "AllowHttpApi-${trim(replace(each.key, "/[^A-Za-z0-9]+/", "-"), "-")}"
   action        = "lambda:InvokeFunction"
-  function_name = each.value.name
+  function_name = var.functions[each.value.function].name
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.http.execution_arn}/*/*/${each.value.path}"
+  source_arn    = "${aws_apigatewayv2_api.http.execution_arn}/*/${each.value.method}/${each.value.path}"
 }
 
 moved {
@@ -90,9 +100,4 @@ moved {
 moved {
   from = aws_apigatewayv2_route.score
   to   = aws_apigatewayv2_route.route["POST /score"]
-}
-
-moved {
-  from = aws_lambda_permission.api
-  to   = aws_lambda_permission.function["scoring"]
 }
