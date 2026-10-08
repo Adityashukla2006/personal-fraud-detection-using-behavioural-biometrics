@@ -112,11 +112,14 @@ function contributionBars(contributions) {
   );
 }
 
-async function release(transferId) {
-  await api("POST", `/console/transfers/${state.uid}/${transferId}/release`);
-  status("Release sent to the workflow. The ledger updates in a moment.");
+async function settle(transferId, outcome) {
+  await api("POST", `/console/transfers/${state.uid}/${transferId}/${outcome}`);
+  status(`${outcome === "release" ? "Release" : "Denial"} sent to the workflow. The ledger updates in a moment.`);
   setTimeout(() => loadUser().catch((error) => status(error.message, true)), 1500);
 }
+
+const settleButton = (transferId, outcome, label, className) =>
+  el("button", { type: "button", className, text: label, onclick: () => settle(transferId, outcome).catch((error) => status(error.message, true)) });
 
 async function loadUser() {
   if (!state.uid) return;
@@ -142,8 +145,8 @@ async function loadUser() {
         el("td", {}, badge(t.action)),
         el("td", {}, badge(t.status)),
         el("td", { text: t.reason ?? "" }),
-        el("td", {}, t.status === "under_review"
-          ? el("button", { type: "button", className: "small", text: "Release", onclick: () => release(t.transfer_id).catch((error) => status(error.message, true)) })
+        el("td", { className: "settle" }, t.status === "under_review"
+          ? [settleButton(t.transfer_id, "release", "Release", "small"), settleButton(t.transfer_id, "deny", "Deny", "small danger")]
           : null),
       ),
     ),

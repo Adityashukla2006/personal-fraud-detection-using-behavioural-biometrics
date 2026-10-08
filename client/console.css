@@ -16,6 +16,9 @@
 .narrow { max-width: 30rem; }
 .stack { display: grid; gap: 1rem; min-width: 0; }
 .small { padding: 0.3rem 0.6rem; font-size: 0.85rem; }
+.danger { background: var(--stop); border-color: var(--stop); }
+.settle { white-space: nowrap; }
+.settle button + button { margin-left: 0.35rem; }
 
 .tabs {
   display: flex;
