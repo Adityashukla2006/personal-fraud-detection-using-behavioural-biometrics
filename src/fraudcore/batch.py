@@ -188,7 +188,7 @@ def edge_signals(
 
     Only a payee first paid within the new-payee window can score as siphoning. An established one
     is still returned, with every siphoning term zero, because its first transfer is how the fast
-    path ages payee novelty: nothing on the live path records a payee edge.
+    path ages payee novelty for a payee the ledger has no edge for.
     """
     history = sorted((r for r in records if r.at <= now), key=lambda r: r.at)
     if len({r.uid for r in history}) > 1:
