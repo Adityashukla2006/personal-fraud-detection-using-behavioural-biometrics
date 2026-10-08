@@ -40,6 +40,8 @@ const state = {
   lastConfirmBehaviour: null,
   watching: false,
   settledHere: new Set(),
+  // Open transfers this page started, until the statement lists them.
+  started: {},
 };
 
 const hood = createHood($("hood"));
@@ -411,13 +413,14 @@ function notify(transfers) {
   // Remembered per user, so a transfer settled while signed out is still announced on return.
   const key = `bfd-seen-${subject()}`;
   const describe = (t) => `${rupees(t.amount)} to ${payeeBook()[t.payee_id]?.name ?? "a new beneficiary"}`;
-  const { notices, seen } = settledNotices(stored(key, null), transfers, describe);
+  const { notices, seen } = settledNotices(stored(key, null), transfers, describe, state.started);
   store(key, seen);
+  for (const transfer of transfers) delete state.started[transfer.transfer_id];
   for (const notice of notices) {
     // This page already showed the outcome of transfers it settled itself.
     if (!state.settledHere.has(notice.transferId)) showNotice(notice);
   }
-  state.watching = transfers.some((t) => OPEN.has(t.status));
+  state.watching = Object.values(seen).some((status) => OPEN.has(status));
 }
 
 function showNotice({ level, title, text }) {
@@ -530,8 +533,7 @@ async function pollTransfer(transferId, attempts = 20) {
 
 async function settle(transfer) {
   const status = transfer.status;
-  if (OPEN.has(status)) state.watching = true;
-  else state.settledHere.add(state.transferId);
+  if (!OPEN.has(status)) state.settledHere.add(state.transferId);
   if (status === "released") {
     showResult({
       level: "good", icon: "✓", title: "Transfer successful",
@@ -616,6 +618,11 @@ async function confirmTransfer() {
   const transfer = decision.transfer;
   if (!transfer) throw new Error("The transfer couldn't be started. Nothing was debited.");
   state.transferId = transfer.transfer_id;
+  if (OPEN.has(transfer.status)) {
+    // Watched from now, including a step-up postponed with "Not now".
+    state.started[transfer.transfer_id] = transfer.status;
+    state.watching = true;
+  }
   rememberPayee((await draftTransaction()).payee_id, state.draft.name, state.draft.account);
 
   if (transfer.status === "awaiting_step_up") {
@@ -677,6 +684,7 @@ function signOut() {
   clearSession(SESSION_KEY);
   state.tokens = null;
   state.watching = false;
+  state.started = {};
   $("notices").replaceChildren();
   state.lastConfirmBehaviour = null;
   $("app").dataset.signedIn = "false";

@@ -19,7 +19,8 @@ pytestmark = pytest.mark.skipif(NODE is None, reason="node is needed to run the 
 HARNESS = """
 import { settledNotices } from %(url)s;
 const describe = (t) => `Rs ${t.amount} to ${t.payee_id}`;
-const out = %(cases)s.map(([seen, transfers]) => settledNotices(seen, transfers, describe));
+const out = %(cases)s.map(([seen, transfers, started]) =>
+  settledNotices(seen, transfers, describe, started ?? undefined));
 process.stdout.write(JSON.stringify(out));
 """
 
@@ -34,7 +35,13 @@ def _transfer(status: str, reason: str | None = None, transfer_id: str = "t1") -
     }
 
 
-def _run(*cases: tuple[dict[str, str] | None, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+Case = (
+    tuple[dict[str, str] | None, list[dict[str, Any]]]
+    | tuple[dict[str, str] | None, list[dict[str, Any]], dict[str, str]]
+)
+
+
+def _run(*cases: Case) -> list[dict[str, Any]]:
     harness = HARNESS % {"url": json.dumps(NOTICES.as_uri()), "cases": json.dumps(cases)}
     result = subprocess.run(
         [NODE, "--input-type=module", "-e", harness],
@@ -98,3 +105,15 @@ def test_each_settled_transfer_gets_its_own_notice() -> None:
         )
     )
     assert [n["transferId"] for n in result["notices"]] == ["a", "b"]
+
+
+def test_a_hold_not_yet_in_the_statement_is_watched_until_it_settles() -> None:
+    # Right after confirming: the workflow has not written the hold to the ledger yet.
+    (just_confirmed,) = _run((None, [], {"t1": "under_review"}))
+    assert just_confirmed["notices"] == []
+    assert just_confirmed["seen"] == {"t1": "under_review"}
+
+    # The analyst released it before the statement was ever read with it listed.
+    (released,) = _run(({}, [_transfer("released")], {"t1": "under_review"}))
+    assert [n["title"] for n in released["notices"]] == ["Transfer approved"]
+    assert released["seen"] == {"t1": "released"}

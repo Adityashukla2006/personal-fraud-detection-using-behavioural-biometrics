@@ -5,14 +5,19 @@
 export const OPEN = new Set(["pending", "processing", "awaiting_step_up", "under_review"]);
 
 // `seen` maps transfer ids to the status last shown, or is null on a first look, which notifies
-// nothing: the statement already shows how old transfers ended. `describe(transfer)` returns
-// "₹500.00 to Maa" or similar.
-export function settledNotices(seen, transfers, describe) {
+// nothing: the statement already shows how old transfers ended. `started` maps transfers this page
+// just started to their open status: the workflow writes a hold to the ledger a moment after
+// scoring returns, so the statement may not list them yet. They are kept until it does.
+// `describe(transfer)` returns "₹500.00 to Maa" or similar.
+export function settledNotices(seen, transfers, describe, started = {}) {
+  const known = { ...seen, ...started };
   const notices = [];
   const next = {};
+  const listed = new Set(transfers.map((t) => t.transfer_id));
+  for (const [id, status] of Object.entries(started)) if (!listed.has(id)) next[id] = status;
   for (const transfer of transfers) {
     next[transfer.transfer_id] = transfer.status;
-    const before = seen?.[transfer.transfer_id];
+    const before = known[transfer.transfer_id];
     if (OPEN.has(before) && !OPEN.has(transfer.status)) {
       notices.push({ transferId: transfer.transfer_id, ...message(before, transfer, describe(transfer)) });
     }
