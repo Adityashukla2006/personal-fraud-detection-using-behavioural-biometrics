@@ -99,7 +99,8 @@
       "ResultPath": "$.review",
       "Retry": ${lambda_retry},
       "Catch": [
-        { "ErrorEquals": ["States.Timeout"], "ResultPath": "$.error", "Next": "CancelTimedOut" }
+        { "ErrorEquals": ["States.Timeout"], "ResultPath": "$.error", "Next": "CancelTimedOut" },
+        { "ErrorEquals": ["bfd.ReviewDenied"], "ResultPath": "$.error", "Next": "CancelDenied" }
       ],
       "Next": "Release"
     },
@@ -137,6 +138,18 @@
         "Payload": { "op": "cancel", "reason": "timeout", "transfer.$": "$" }
       },
       "ResultSelector": { "status.$": "$.Payload.status", "reason": "timeout" },
+      "ResultPath": "$.ledger",
+      "Retry": ${lambda_retry},
+      "Next": "PublishOutcome"
+    },
+    "CancelDenied": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ledger_arn}",
+        "Payload": { "op": "cancel", "reason": "denied", "transfer.$": "$" }
+      },
+      "ResultSelector": { "status.$": "$.Payload.status", "reason": "denied" },
       "ResultPath": "$.ledger",
       "Retry": ${lambda_retry},
       "Next": "PublishOutcome"

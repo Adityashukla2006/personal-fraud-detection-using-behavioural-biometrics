@@ -285,9 +285,9 @@ resource "aws_iam_role_policy" "console_access" {
         }
       },
       {
-        Sid      = "ReleaseReviewedTransfers"
+        Sid      = "SettleReviewedTransfers"
         Effect   = "Allow"
-        Action   = "states:SendTaskSuccess"
+        Action   = ["states:SendTaskSuccess", "states:SendTaskFailure"]
         Resource = "*"
       },
     ]

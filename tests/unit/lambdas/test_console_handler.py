@@ -10,6 +10,7 @@ import io
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -89,11 +90,17 @@ class FakeSfn:
     def __init__(self, error: ClientError | None = None) -> None:
         self.error = error
         self.successes: list[dict[str, Any]] = []
+        self.failures: list[dict[str, Any]] = []
 
     def send_task_success(self, **kwargs: Any) -> None:
         if self.error:
             raise self.error
         self.successes.append(kwargs)
+
+    def send_task_failure(self, **kwargs: Any) -> None:
+        if self.error:
+            raise self.error
+        self.failures.append(kwargs)
 
 
 ITEMS: list[dict[str, Any]] = [
@@ -293,3 +300,46 @@ class TestRelease:
         status, _ = _call(self.ROUTE, _deps(sfn=sfn), claims={"sub": "u"}, params=self.PARAMS)
         assert status == 403
         assert sfn.successes == []
+
+
+class TestDeny:
+    ROUTE = "POST /console/transfers/{uid}/{transfer_id}/deny"
+    PARAMS = {"uid": UID, "transfer_id": TRANSFER}
+
+    def test_a_transfer_under_review_fails_its_review_task(self) -> None:
+        sfn = FakeSfn()
+        status, body = _call(self.ROUTE, _deps(sfn=sfn), params=self.PARAMS)
+        assert (status, body) == (200, {"status": "deny_requested"})
+        assert sfn.successes == []
+        (failure,) = sfn.failures
+        assert failure["taskToken"] == "secret-task-token"
+        # The name the workflow's AwaitReview state catches to cancel the transfer.
+        assert failure["error"] == "bfd.ReviewDenied"
+
+    def test_the_workflow_catches_the_denial(self) -> None:
+        definition = (
+            Path(__file__).resolve().parents[3]
+            / "infra"
+            / "modules"
+            / "workflow"
+            / "transfer.asl.json.tftpl"
+        ).read_text(encoding="utf-8")
+        assert '"ErrorEquals": ["bfd.ReviewDenied"]' in definition
+
+    def test_a_transfer_not_under_review_is_not_denied(self) -> None:
+        items = [dict(item) for item in ITEMS]
+        items[-1]["status"] = "released"
+        sfn = FakeSfn()
+        status, body = _call(self.ROUTE, _deps(FakeTable(items), sfn), params=self.PARAMS)
+        assert (status, body["status"]) == (409, "released")
+        assert sfn.failures == []
+
+    def test_a_closed_review_window_is_a_conflict(self) -> None:
+        sfn = FakeSfn(error=_error("TaskDoesNotExist"))
+        assert _call(self.ROUTE, _deps(sfn=sfn), params=self.PARAMS)[0] == 409
+
+    def test_a_non_analyst_cannot_deny(self) -> None:
+        sfn = FakeSfn()
+        status, _ = _call(self.ROUTE, _deps(sfn=sfn), claims={"sub": "u"}, params=self.PARAMS)
+        assert status == 403
+        assert sfn.failures == []

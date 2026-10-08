@@ -90,12 +90,8 @@ def test_the_analyst_sees_the_users_decisions_transfers_and_lake(
     assert any(event["type"] == "decision.scored" for event in events)
 
 
-def test_an_analyst_releases_a_transfer_held_for_review(
-    stack: Stack,  # noqa: F811
-    outputs: dict[str, Any],
-    analyst: dict[str, str],
-) -> None:
-    transfer_id = f"{TEST_PREFIX}review{time.time_ns()}"
+def _hold_for_review(stack: Stack, outputs: dict[str, Any], name: str) -> str:  # noqa: F811
+    transfer_id = f"{TEST_PREFIX}{name}{time.time_ns()}"
     stack.created.append((f"LEDGER#{stack.sub}", f"TXN#{transfer_id}"))
     stack.sfn.start_execution(
         stateMachineArn=outputs["state_machine_arn"],
@@ -106,7 +102,7 @@ def test_an_analyst_releases_a_transfer_held_for_review(
                 "decision_id": transfer_id,
                 "uid": stack.sub,
                 "amount": 64.0,
-                "payee_id": stack.payee_id("review"),
+                "payee_id": stack.payee_id(name),
                 "action": "restrict",
                 "response": "review",
                 "risk": 70.0,
@@ -120,7 +116,15 @@ def test_an_analyst_releases_a_transfer_held_for_review(
         lambda item: item.get("status") == "under_review" and "task_token" in item,
         WAIT_SECONDS,
     )
+    return transfer_id
 
+
+def test_an_analyst_releases_a_transfer_held_for_review(
+    stack: Stack,  # noqa: F811
+    outputs: dict[str, Any],
+    analyst: dict[str, str],
+) -> None:
+    transfer_id = _hold_for_review(stack, outputs, "review")
     url = f"{outputs['api_url']}/console/transfers/{stack.sub}/{transfer_id}/release"
     status, body = post(url, {}, analyst["token"])
     assert (status, body) == (200, {"status": "release_requested"})
@@ -129,3 +133,22 @@ def test_an_analyst_releases_a_transfer_held_for_review(
     # Released once: a second release finds nothing under review.
     status, body = post(url, {}, analyst["token"])
     assert (status, body["status"]) == (409, "released")
+
+
+def test_an_analyst_denies_a_transfer_held_for_review(
+    stack: Stack,  # noqa: F811
+    outputs: dict[str, Any],
+    analyst: dict[str, str],
+) -> None:
+    transfer_id = _hold_for_review(stack, outputs, "deny")
+    base = f"{outputs['api_url']}/console/transfers/{stack.sub}/{transfer_id}"
+    status, body = post(f"{base}/deny", {}, analyst["token"])
+    assert (status, body) == (200, {"status": "deny_requested"})
+    settled = _settled(stack, transfer_id)
+    # What the customer's page reads to say an analyst declined it.
+    assert (settled["status"], settled["reason"]) == ("cancelled", "denied")
+    assert stack.execution(transfer_id)["status"] == "SUCCEEDED"
+
+    # Denied once: it can no longer be released.
+    status, body = post(f"{base}/release", {}, analyst["token"])
+    assert (status, body["status"]) == (409, "cancelled")

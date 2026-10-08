@@ -5,9 +5,9 @@ why, where each transfer is in the workflow, what the audit lake recorded, and w
 learned. Every route requires membership of the analyst Cognito group, checked here from the token's
 groups claim, so an ordinary signed-in user sees nothing that is not their own.
 
-The only write is releasing a transfer held for review, which replaces the command-line
-SendTaskSuccess an analyst needed before. It sends ``method: analyst_review``, so it can never be
-mistaken for a passkey verification and never reaches adaptation.
+The only writes settle a transfer held for review. Releasing it sends ``method: analyst_review``,
+so it can never be mistaken for a passkey verification and never reaches adaptation. Denying it
+fails the workflow's review task with ``ReviewDenied``, which cancels the transfer.
 
 Routes, all behind the JWT authorizer:
 
@@ -15,6 +15,7 @@ Routes, all behind the JWT authorizer:
     GET  /console/users/{uid}                            decisions, transfers, balance, adaptation
     GET  /console/lake                                   the most recent audit-lake events
     POST /console/transfers/{uid}/{transfer_id}/release  release a transfer under review
+    POST /console/transfers/{uid}/{transfer_id}/deny     cancel a transfer under review
 
 Task tokens are never returned: holding one is holding the power to release a transfer.
 """
@@ -46,6 +47,8 @@ LAKE_EVENT_LIMIT = 40
 USER_PAGES = 3
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{8,64}")
+# Must match the AwaitReview catch in the workflow definition.
+REVIEW_DENIED = "bfd.ReviewDenied"
 _CLOSED_HOLD = frozenset({"TaskTimedOut", "TaskDoesNotExist", "InvalidToken"})
 
 
@@ -120,6 +123,8 @@ def handle(event: Mapping[str, Any], deps: Dependencies) -> dict[str, Any]:
             return _response(200, {"events": recent_events(deps)})
         if route == "POST /console/transfers/{uid}/{transfer_id}/release":
             return release(params.get("uid", ""), params.get("transfer_id", ""), analyst, deps)
+        if route == "POST /console/transfers/{uid}/{transfer_id}/deny":
+            return deny(params.get("uid", ""), params.get("transfer_id", ""), analyst, deps)
         return _response(404, {"error": "route not found"})
     except Exception:
         LOGGER.exception("console request failed")
@@ -300,6 +305,40 @@ def recent_events(deps: Dependencies, limit: int = LAKE_EVENT_LIMIT) -> list[dic
 
 
 def release(uid: str, transfer_id: str, analyst: str, deps: Dependencies) -> dict[str, Any]:
+    def send(token: str) -> None:
+        deps.sfn.send_task_success(
+            taskToken=token,
+            output=json.dumps(
+                {
+                    "reviewed": True,
+                    "method": "analyst_review",
+                    "reviewed_by": analyst,
+                    "reviewed_at": int(deps.clock()),
+                }
+            ),
+        )
+
+    return _settle(uid, transfer_id, send, "release_requested", analyst, deps)
+
+
+def deny(uid: str, transfer_id: str, analyst: str, deps: Dependencies) -> dict[str, Any]:
+    def send(token: str) -> None:
+        # The workflow catches this error name and cancels with reason "denied".
+        deps.sfn.send_task_failure(
+            taskToken=token, error=REVIEW_DENIED, cause=f"denied by analyst {analyst}"
+        )
+
+    return _settle(uid, transfer_id, send, "deny_requested", analyst, deps)
+
+
+def _settle(
+    uid: str,
+    transfer_id: str,
+    send: Callable[[str], None],
+    outcome: str,
+    analyst: str,
+    deps: Dependencies,
+) -> dict[str, Any]:
     if not (_valid(uid) and _valid(transfer_id)):
         return _response(404, {"error": "transfer not found"})
     item = deps.table.get_item(
@@ -312,23 +351,13 @@ def release(uid: str, transfer_id: str, analyst: str, deps: Dependencies) -> dic
             409, {"error": "transfer is not held for review", "status": item.get("status")}
         )
     try:
-        deps.sfn.send_task_success(
-            taskToken=item["task_token"],
-            output=json.dumps(
-                {
-                    "reviewed": True,
-                    "method": "analyst_review",
-                    "reviewed_by": analyst,
-                    "reviewed_at": int(deps.clock()),
-                }
-            ),
-        )
+        send(item["task_token"])
     except ClientError as error:
         if error.response.get("Error", {}).get("Code") in _CLOSED_HOLD:
             return _response(409, {"error": "the review window has closed"})
         raise
-    LOGGER.info("analyst %s released transfer %s for %s", analyst, transfer_id, uid)
-    return _response(200, {"status": "release_requested"})
+    LOGGER.info("analyst %s: %s for transfer %s of %s", analyst, outcome, transfer_id, uid)
+    return _response(200, {"status": outcome})
 
 
 _dependencies: Dependencies | None = None

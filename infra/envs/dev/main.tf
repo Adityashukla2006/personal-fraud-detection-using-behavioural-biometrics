@@ -129,5 +129,6 @@ module "api" {
     "GET /console/users/{uid}"                            = "console"
     "GET /console/lake"                                   = "console"
     "POST /console/transfers/{uid}/{transfer_id}/release" = "console"
+    "POST /console/transfers/{uid}/{transfer_id}/deny"    = "console"
   }
 }
