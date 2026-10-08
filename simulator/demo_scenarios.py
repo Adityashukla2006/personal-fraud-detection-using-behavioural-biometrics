@@ -9,6 +9,7 @@ same way the integration tests seed theirs, and marks every item it writes with 
     python simulator/demo_scenarios.py takeover        --email you@example.com
     python simulator/demo_scenarios.py enrolled-device --email you@example.com
     python simulator/demo_scenarios.py flagged-payee   --account 123456789
+    python simulator/demo_scenarios.py history         --email you@example.com [--account 123456789]
     python simulator/demo_scenarios.py clear           --email you@example.com [--account 123456789]
 
 What each does to your next transfer, with the current fusion model:
@@ -20,6 +21,10 @@ What each does to your next transfer, with the current fusion model:
     enrolled-device  marks your browser's device as enrolled, so a passkey step-up there earns full
                      trust and adaptation learns from it
     analyst          adds you to the analyst group; sign in to the console again afterwards
+    history          months of ordinary use: transaction aggregates, an established account, your
+                     browser enrolled and, with --account, a long-standing verified payee. A large
+                     transfer to a new payee then stands out against the history; the nightly
+                     aggregator overwrites the aggregates with what the lake really holds
 """
 
 from __future__ import annotations
@@ -93,6 +98,59 @@ def flagged_payee(account: str) -> dict[str, Any]:
     }
 
 
+DAY = 86_400
+HISTORY_TRANSFERS = 64
+HISTORY_SESSIONS = 40
+# Waking hours in India, 05:30 to 21:30 IST, in UTC: the histogram is UTC, like the aggregator's.
+HISTORY_HOURS_UTC = range(0, 16)
+
+
+def history_items(
+    uid: str,
+    device_id: str,
+    device_class: str,
+    payee_account: str | None = None,
+    now: float | None = None,
+) -> list[dict[str, Any]]:
+    """What months of ordinary use would have built: payments of about 2,000, by day."""
+    now = time.time() if now is None else now
+    per_hour = Decimal(HISTORY_TRANSFERS // len(HISTORY_HOURS_UTC))
+    items: list[dict[str, Any]] = [
+        {
+            "PK": f"AGG#{uid}",
+            "SK": "WINDOW#30d",
+            "amount_p50": Decimal("2000"),
+            "amount_p95": Decimal("8000"),
+            "daily_count_p95": Decimal("2"),
+            "hour_histogram": [
+                per_hour if hour in HISTORY_HOURS_UTC else Decimal("0") for hour in range(24)
+            ],
+            "history_count": HISTORY_TRANSFERS,
+            "computed_at": int(now),
+            "demo_seed": "history",
+        },
+        {
+            "PK": f"USER#{uid}",
+            "SK": "ACCOUNT",
+            "session_count": HISTORY_SESSIONS,
+            "demo_seed": "history",
+        },
+        {**enrolled_device(uid, device_id, device_class), "demo_seed": "history"},
+    ]
+    if payee_account:
+        items.append(
+            {
+                "PK": f"USER#{uid}",
+                "SK": f"PAYEE#{payee_id(payee_account)}",
+                "first_seen": int(now) - 200 * DAY,
+                "verified_at": int(now) - 190 * DAY,
+                "txn_count": 12,
+                "demo_seed": "history",
+            }
+        )
+    return items
+
+
 def demo_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Only items this script marked. Anything else in the partition is real and left alone."""
     return [item for item in items if "demo_seed" in item]
@@ -112,7 +170,8 @@ def outputs() -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Seed or clear demo scenarios on the dev stack.")
     parser.add_argument(
-        "scenario", choices=["analyst", "takeover", "enrolled-device", "flagged-payee", "clear"]
+        "scenario",
+        choices=["analyst", "takeover", "enrolled-device", "flagged-payee", "history", "clear"],
     )
     parser.add_argument("--email")
     parser.add_argument("--account", help="payee account number, as typed in the banking client")
@@ -135,6 +194,18 @@ def main() -> int:
         user = cognito.admin_get_user(UserPoolId=out["user_pool_id"], Username=args.email)
         return next(a["Value"] for a in user["UserAttributes"] if a["Name"] == "sub")
 
+    def latest_device(uid: str) -> tuple[str, str]:
+        latest = table.query(
+            IndexName="GSI1",
+            KeyConditionExpression=Key("GSI1PK").eq(f"USER#{uid}"),
+            ScanIndexForward=False,
+            Limit=1,
+        )["Items"]
+        # The index projects every attribute, so the newest decision already carries its device.
+        if not latest or "device_id" not in latest[0]:
+            parser.error("sign in to the banking client once first, so the device is known")
+        return latest[0]["device_id"], latest[0]["device_class"]
+
     if args.scenario == "analyst":
         if not args.email:
             parser.error("analyst needs --email")
@@ -147,18 +218,16 @@ def main() -> int:
         print(f"Seeded a mismatched {args.device_class} profile: the next transfer steps up.")
     elif args.scenario == "enrolled-device":
         uid = subject()
-        latest = table.query(
-            IndexName="GSI1",
-            KeyConditionExpression=Key("GSI1PK").eq(f"USER#{uid}"),
-            ScanIndexForward=False,
-            Limit=1,
-        )["Items"]
-        # The index projects every attribute, so the newest decision already carries its device.
-        if not latest or "device_id" not in latest[0]:
-            parser.error("sign in to the banking client once first, so the device is known")
-        decision = latest[0]
-        table.put_item(Item=enrolled_device(uid, decision["device_id"], decision["device_class"]))
-        print(f"Marked device {decision['device_id']} as enrolled.")
+        device_id, device_class = latest_device(uid)
+        table.put_item(Item=enrolled_device(uid, device_id, device_class))
+        print(f"Marked device {device_id} as enrolled.")
+    elif args.scenario == "history":
+        uid = subject()
+        device_id, device_class = latest_device(uid)
+        seeds = history_items(uid, device_id, device_class, args.account)
+        for item in seeds:
+            table.put_item(Item=item)
+        print(f"Seeded {len(seeds)} history item(s): device {device_id} is now enrolled.")
     elif args.scenario == "flagged-payee":
         if not args.account:
             parser.error("flagged-payee needs --account")
@@ -168,7 +237,11 @@ def main() -> int:
         removed = 0
         if args.email:
             uid = subject()
-            items = table.query(KeyConditionExpression=Key("PK").eq(f"USER#{uid}"))["Items"]
+            items = [
+                item
+                for partition in (f"USER#{uid}", f"AGG#{uid}")
+                for item in table.query(KeyConditionExpression=Key("PK").eq(partition))["Items"]
+            ]
             for item in demo_items(items):
                 table.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
                 removed += 1
