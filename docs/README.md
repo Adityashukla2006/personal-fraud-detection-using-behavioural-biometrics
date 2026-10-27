@@ -3,6 +3,7 @@
 Project documentation. The source document is reproduced here in full and then split into the
 sections that are referenced individually.
 
+- [project-guide.pdf](project-guide.pdf), the whole project in simple language, for a new reader.
 - [project-documentation.md](project-documentation.md), the full source document, reproduced.
 - [literature-survey.md](literature-survey.md), the 15 paper survey table and the thematic synthesis.
 - [research-gap.md](research-gap.md), gaps RG1 to RG5, the consolidated gap statement and the
